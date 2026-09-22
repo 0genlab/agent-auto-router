@@ -13,8 +13,31 @@
 
 - `relay/` —— 本地记录代理：忠实转发 + 逐轮落盘 + 写入时脱敏。所有 agent 共用。
   启动：`node relay/relay.mjs`（127.0.0.1:8484）；控制面 `/_run/start` `/_run/stop` `/_health`。
-- `scripts/` —— harness 与分析脚本（duckdb 直查 turns.jsonl）。
-- 第一期对象：Hermes Agent（OpenRouter 全球榜 #1），档案在 `agents/hermes/`。
+- `src/core/` —— Agent 无关的角色策略、质量评分、用量成本和契约。
+- `adapters/` —— Agent、模型目录、任务评测和 JSONL 存储适配器。
+- `scripts/` —— 角色运行、会话采集、价格同步和实验报告脚本。
+
+## 预览接入矩阵
+
+当前版本先把“角色模型评测与自动切换决策”工程化，在线执行仍由宿主 Agent 自己负责。下表区分已验证接入和可扩展接口：
+
+| 类型 | 接入 | 状态 | 说明 |
+| --- | --- | --- | --- |
+| Agent 宿主 | Codex CLI | ✅ 已接入并验证 | 支持角色运行、退出状态、耗时、Token、成本和本地 session 被动采集 |
+| Agent 宿主 | 通用命令行 Agent | 🧪 预览扩展 | 通过 `adapters/codex/command-runner.mjs` 兼容可执行命令；目前只对 Codex 做过真实验证 |
+| Agent 宿主 | Hermes | 📦 benchmark 参考 | 既有 Hermes 评测数据可作为实验输入，但当前公开提交不把 Hermes 运行时耦合进核心 |
+| 模型目录/供应商 | AIHubMix | ✅ 已接入并验证 | 动态读取 `https://aihubmix.com/api/v1/models?type=llm`，同步模型 ID 和价格快照 |
+| 模型供应商 | OpenAI、Anthropic、DeepSeek 等直连 | 🔌 扩展点 | 核心不绑定直连协议；新增 `ModelCatalogProvider` 或 Agent adapter 后接入，不在当前版本虚报已支持 |
+| 持久化 | JSONL | ✅ 已接入 | 保存结构化任务、角色、模型、质量、成本和证据元数据 |
+| 任务评测 | 命令行测试/回归/diff | ✅ 已接入 | 只保存客观结果，不保存测试命令 stdout/stderr |
+
+### 当前角色模型
+
+`planner`、`researcher`、`explorer`、`implementer`、`e2e`、`reviewer` 是策略层的角色，不是供应商或固定 Agent。当前 Codex 预览配置将这些角色映射到不同模型；其他 Agent 可以复用同一角色协议，不需要复制 Codex 的配置文件。
+
+### 供应商边界
+
+本仓库当前的真实供应商接入是 AIHubMix 模型目录和 Codex session 中的 provider 元数据。模型 ID 以 AIHubMix 实时目录为准，不把 `gpt-*`、`claude-*`、`deepseek-*` 等 ID 误写成已完成直连。后续供应商接入应实现 `ModelCatalogProvider`，并补充协议、价格、能力和实际调用验证。
 
 ## 角色模型策略实验层
 
