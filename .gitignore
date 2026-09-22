@@ -1,0 +1,10 @@
+data/runs/_unassigned/
+data/role-runs/*
+!data/role-runs/.gitkeep
+data/experiments/*
+!data/experiments/.gitkeep
+data/model-price-snapshot.json
+harness/
+.DS_Store
+node_modules/
+/dist/

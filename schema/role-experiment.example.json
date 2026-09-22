@@ -1,0 +1,18 @@
+{
+  "id": "implementation-001",
+  "title": "Implement refund retry",
+  "role": "implementer",
+  "type": "implementation",
+  "task_family": "implementation",
+  "project": ".",
+  "expected": "All acceptance tests pass",
+  "repo_language": "go",
+  "tool_profile": "terminal+tests",
+  "context_size_bucket": "32k-64k",
+  "prompt": "Implement refund retry and run the tests",
+  "command": ["codex", "exec", "--full-auto", "-m", "{model}", "{prompt}"],
+  "test_command": ["go", "test", "./..."],
+  "regression_command": ["python3", "regression_test.py"],
+  "diff_check": true,
+  "models": ["deepseek-v4.1-flash", "deepseek-v4-pro"]
+}
