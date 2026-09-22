@@ -1,187 +1,188 @@
 # agent-auto-router
 
-给 Agent 挑选合适模型的路由与评测工具：根据任务阶段、角色、历史表现、质量门槛和成本，为 Agent 推荐或选择最合适的模型。
+An evidence-driven routing and evaluation tool that helps agents choose the right model for each task.
 
-它不是单纯的模型排行榜，也不是只把请求转发到某个供应商的网关。核心闭环是：**Agent 声明任务 → router 识别角色和任务类型 → 从实时模型目录筛选候选 → 选择满足质量门槛且性价比最高的模型 → 执行任务 → 记录结果 → 用真实表现更新后续推荐**。
+> In one sentence: the agent submits a task, `agent-auto-router` selects a model; the agent executes the task, and the router records evidence to improve the next decision.
 
-所有选择都可回溯：记录 Agent、角色、模型、任务、测试结果、返工、耗时、Token、成本和证据；样本不足时只观察和推荐，不擅自切换。当前 Codex 接入是第一个宿主实现，其他 Agent 可以通过适配器接入。
+This is not a leaderboard or a request-only proxy. Model choices are traceable, and the default behavior is observe-and-recommend until there is enough evidence to justify a switch. Codex CLI is the first validated host; other agents can connect through adapters.
 
-## 核心资产
+## End-to-end loop
 
-1. **逐轮原始数据**（`data/runs/`）——agent × 模型的每一轮请求/响应、SSE chunk 级时间戳。榜单和文章都是从它派生的视图。规格见 [schema/SCHEMA.md](schema/SCHEMA.md)。
-2. **每 agent 接入档案**（`agents/<name>/`）——安装、每模型配置方法、踩坑记录。面向开发者的可查阅参考。
-3. **任务集**（`tasks/`）——见 [tasks/TASKS.md](tasks/TASKS.md)。目标形态=1 旗舰 + 5 探针 + agent 特色实验；**episode 1 实际已建成并跑过 2 个**：`ep1-f005`（旗舰：真实凭据泄漏安全修复，即我们上游的 F-005）+ `p1`（探针：工具链寻宝追踪）。二者都不是刷题，是 agent 用终端工具做真实开发/操作任务。
-
-## 组件
-
-- `relay/` —— 本地记录代理：忠实转发 + 逐轮落盘 + 写入时脱敏。所有 agent 共用。
-  启动：`node relay/relay.mjs`（127.0.0.1:8484）；控制面 `/_run/start` `/_run/stop` `/_health`。
-- `src/core/` —— Agent 无关的角色策略、质量评分、用量成本和契约。
-- `adapters/` —— Agent、模型目录、任务评测和 JSONL 存储适配器。
-- `scripts/` —— 角色运行、会话采集、价格同步和实验报告脚本。
-
-## 预览接入矩阵
-
-当前版本先把“角色模型评测与自动切换决策”工程化，在线执行仍由宿主 Agent 自己负责。下表区分已验证接入和可扩展接口：
-
-| 类型 | 接入 | 状态 | 说明 |
-| --- | --- | --- | --- |
-| Agent 宿主 | Codex CLI | ✅ 已接入并验证 | 支持角色运行、退出状态、耗时、Token、成本和本地 session 被动采集 |
-| Agent 宿主 | 通用命令行 Agent | 🧪 预览扩展 | 通过 `adapters/codex/command-runner.mjs` 兼容可执行命令；目前只对 Codex 做过真实验证 |
-| Agent 宿主 | Hermes | 📦 benchmark 参考 | 既有 Hermes 评测数据可作为实验输入，但当前公开提交不把 Hermes 运行时耦合进核心 |
-| 模型目录/供应商 | AIHubMix | ✅ 已接入并验证 | 动态读取 `https://aihubmix.com/api/v1/models?type=llm`，同步模型 ID 和价格快照 |
-| 模型供应商 | OpenAI、Anthropic、DeepSeek 等直连 | 🔌 扩展点 | 核心不绑定直连协议；新增 `ModelCatalogProvider` 或 Agent adapter 后接入，不在当前版本虚报已支持 |
-| 持久化 | JSONL | ✅ 已接入 | 保存结构化任务、角色、模型、质量、成本和证据元数据 |
-| 任务评测 | 命令行测试/回归/diff | ✅ 已接入 | 只保存客观结果，不保存测试命令 stdout/stderr |
-
-### 当前角色模型
-
-`planner`、`researcher`、`explorer`、`implementer`、`e2e`、`reviewer` 是策略层的角色，不是供应商或固定 Agent。当前 Codex 预览配置将这些角色映射到不同模型；其他 Agent 可以复用同一角色协议，不需要复制 Codex 的配置文件。
-
-### 供应商边界
-
-本仓库当前的真实供应商接入是 AIHubMix 模型目录和 Codex session 中的 provider 元数据。模型 ID 以 AIHubMix 实时目录为准，不把 `gpt-*`、`claude-*`、`deepseek-*` 等 ID 误写成已完成直连。后续供应商接入应实现 `ModelCatalogProvider`，并补充协议、价格、能力和实际调用验证。
-
-## 核心：给 Agent 挑选模型
-
-`configs/role-policy.json`、`src/core/role-policy.mjs` 和 `scripts/role-run.mjs` 提供给 Agent 使用的模型选择能力：
-
-- 角色：`planner`、`researcher`、`explorer`、`implementer`、`e2e`、`reviewer`；
-- 选择依据：角色、任务类型、工具能力、模型可用性、历史质量、成功率、延迟、返工和成本；
-- 记录结果：任务、角色、模型、测试、返工、耗时、Token、成本和证据；
-- 评测：核心只使用测试、E2E、diff、回归、耗时、token、成本和人工验收等可追溯证据；LLM Judge 不进入默认评分链路；
-- 策略：默认 `shadow`，先统计和推荐，满足样本、质量、成功率和成本门槛后再考虑灰度/晋级；
-- 兼容：不修改现有 `data/runs/` 和 `data/scoreboard.jsonl` 的语义。
-
-典型调用链：
-
-```text
-Agent → start task(role, task profile)
-      → router loads live model catalog
-      → filter available/capable models
-      → compare quality gates, latency and cost
-      → recommend/select model
-      → Agent executes with that model
-      → router records evidence and updates policy
+```mermaid
+flowchart LR
+    A[Agent submits task] --> B[Identify role and task type]
+    B --> C[Load live model catalog]
+    C --> D[Filter available models]
+    D --> E[Apply quality and cost gates]
+    E --> F[Recommend or select model]
+    F --> G[Agent executes task]
+    G --> H[Collect tests, tokens, cost, rework]
+    H --> I[Create objective evaluation]
+    I --> J[Update role-model statistics]
+    J -. next task .-> E
 ```
 
-当前版本的自动切换默认处于 `shadow` 模式：router 会给出候选和切换理由，但不会未经批准改写宿主 Agent 的模型配置。满足样本量、成功率、质量和成本门槛后，才允许进入灰度或自动晋级。
+Selection considers role, task type, tool requirements, model availability, historical quality, success rate, latency, rework, and cost. The default policy is `shadow`: the router explains candidates and switch reasons first; gray rollout or automatic promotion requires the configured admission gates.
 
-### 通用核心与适配器边界
+## Repository map
 
-当前项目以 `0genlab` 为评测实验室，仓库名称为 `agent-auto-router`；当前版本先提供可复用的角色模型评测与策略层，不把 Codex 误包装成只能服务于某个 Agent 的运行时网关。角色模型策略已经拆成两层：
+| Directory | Purpose |
+| --- | --- |
+| `src/core/` | Role policy, quality scoring, token/cost calculation, and shared contracts |
+| `adapters/` | Codex, command-line agents, AIHubMix catalog, and JSONL adapters |
+| `scripts/` | Task execution, session ingestion, price sync, evaluation, and reports |
+| `configs/` | Role-model policy and switching thresholds |
+| `schema/` | Run, experiment, and report formats |
+| `tests/` | Core policy, adapter, and ingestion tests |
 
-- `src/core/role-policy.mjs`：纯策略核心，负责客观指标、候选门槛、基准模型比较和自动晋升判断，不依赖 Codex 或具体存储。
-- `src/core/contracts.mjs`：定义 Agent、模型目录和任务评测适配器契约，并统一任务画像字段。
-- `adapters/jsonl/role-run-store.mjs`：JSONL 文件存储适配器。
-- `adapters/codex/role-run.mjs`：Codex CLI 角色运行适配器，保留 `scripts/role-run.mjs` 作为兼容入口。
-- `adapters/aihubmix/model-catalog.mjs`：AIHubMix 实时 LLM 目录适配器，核心只依赖 `ModelCatalogProvider` 契约。
-- 推荐结果包含质量、成功率、成本、P95 延迟、回归和返工维度的 `pareto_frontier`，避免只按最低成本选模型。
+## Preview integrations
 
-后续接入其他 Agent 时，只需新增 Agent adapter 和对应的模型目录 provider；不要把 Codex 的 `AGENTS.md`、subagent 配置或 AIHubMix 启动脚本复制进核心层。仓库名称固定为 `agent-auto-router`，但核心仍保持 Agent 无关，在线请求转发由具体宿主适配器负责。
+The current release focuses on role-based model evaluation and switching decisions. The host agent remains responsible for invoking the selected model and completing the task.
 
-示例：
+| Type | Integration | Status | Notes |
+| --- | --- | --- | --- |
+| Agent host | Codex CLI | ✅ Validated | Supports role runs, exit status, latency, tokens, cost, and passive local session ingestion |
+| Agent host | Generic command-line agent | 🧪 Preview | Uses `adapters/codex/command-runner.mjs`; only Codex has been validated against a real session so far |
+| Agent host | Hermes | 📦 Benchmark reference | Existing Hermes benchmark data can be used as experiment input, but the public core does not couple to the Hermes runtime |
+| Model catalog/provider | AIHubMix | ✅ Validated | Reads `https://aihubmix.com/api/v1/models?type=llm` and can generate model ID and price snapshots |
+| Direct model providers | OpenAI, Anthropic, DeepSeek, and others | 🔌 Extension point | Add a `ModelCatalogProvider` or Agent adapter; this release does not claim direct provider integration |
+| Persistence | JSONL | ✅ Validated | Stores structured task, role, model, quality, cost, and evidence metadata |
+| Evaluation | CLI tests, regression checks, and diff checks | ✅ Validated | Stores objective results without test command stdout/stderr |
+
+### Role vocabulary
+
+`planner`, `researcher`, `explorer`, `implementer`, `e2e`, and `reviewer` are policy roles, not providers or fixed agents. A host can map these roles to different models without copying Codex-specific configuration.
+
+### Provider boundary
+
+The current real provider integration is the AIHubMix model catalog plus provider metadata collected from Codex sessions. Model IDs come from the live AIHubMix catalog; names such as `gpt-*`, `claude-*`, and `deepseek-*` are not presented as direct integrations unless a provider adapter and real protocol validation have been added.
+
+## How it works
+
+`configs/role-policy.json`, `src/core/role-policy.mjs`, and `scripts/role-run.mjs` provide the model-selection layer used by an agent:
+
+- **Role and task profile:** identify the work stage, tools, language, risk, and expected outcome.
+- **Candidate selection:** load available models and remove candidates that fail capability or availability checks.
+- **Quality gates:** compare success rate, objective quality, regression results, latency, rework, and cost.
+- **Evidence recording:** persist the selected model, execution result, tests, tokens, cost, and evidence references.
+- **Policy updates:** aggregate results by role and distinct task; recommend a switch only when the configured sample and quality gates are met.
+- **Safety default:** remain in `shadow` mode and never rewrite host configuration without an explicit promotion step.
+
+### Operating principle
+
+```mermaid
+flowchart TB
+    subgraph HOST[Agent host]
+        A[Codex CLI or another agent]
+        X[Agent adapter]
+        A --> X
+    end
+
+    subgraph ROUTER[agent-auto-router]
+        P[Role policy\nrole and task profile]
+        M[Model catalog\ncapabilities and price]
+        S[Scoring\nquality, latency, cost]
+        R[Recommendation\nmodel and switch candidate]
+        P --> S
+        M --> S
+        S --> R
+    end
+
+    subgraph EVIDENCE[Evidence layer]
+        T[Task evaluator\ntests, regression, diff]
+        L[JSONL run store\ntask and run metadata]
+    end
+
+    X --> P
+    R --> X
+    X --> A
+    A --> T
+    A --> L
+    T --> L
+    L --> P
+```
+
+The router answers **which model, why it was selected, whether a switch is allowed, and how the result performed**. The host agent answers **how to call the model, use tools, and complete the task**. The policy core therefore stays independent of Codex and any single provider.
+
+## Quick start
+
+### Record a role run
 
 ```bash
-RUN_ID="$(node scripts/role-run.mjs start --title "实现退款重试" --type implementation --expected "测试通过")"
+RUN_ID="$(node scripts/role-run.mjs start --title "Implement refund retry" --type implementation --expected "Tests pass")"
 node scripts/role-run.mjs record --run-id "$RUN_ID" --role implementer \
   --model deepseek-v4.1-flash --status success --quality-score 4.2 \
   --tests-run 8 --tests-passed 8 --rework-count 0
 node scripts/role-run.mjs recommend
 ```
 
-### 自动记录一次 Codex 命令
+### Record a Codex command
 
-不要把 0genlab 强行写进全局 Codex 启动器；需要记录时显式使用适配器：
+Use the adapter explicitly when you want to record a Codex-compatible command:
 
 ```bash
-ROLEBENCH_ROOT=/path/to/0genlab node scripts/codex-run.mjs \
+ROLEBENCH_ROOT=/path/to/agent-auto-router node scripts/codex-run.mjs \
   --role implementer --model deepseek-v4.1-flash \
-  --title "实现退款重试" --type implementation \
+  --title "Implement refund retry" --type implementation \
   --task-family implementation --repo-language go \
   --tool-profile terminal+tests -- \
-  codex exec --full-auto "实现退款重试并运行测试"
+  codex exec --full-auto "Implement refund retry and run tests"
 ```
 
-命令退出后自动写入 `agent_finished` 事件和耗时；测试结果、成本、质量分和证据仍由任务验证步骤补录。失败时保留失败状态，不把退出码伪装成模型质量评分。
+The command records an `agent_finished` event and latency. Add test results, quality, cost, and evidence in the evaluation step; a failed exit code remains a failure and is never converted into a quality score.
 
-随后运行客观评测器：
+### Evaluate objective evidence
 
 ```bash
-ROLEBENCH_ROOT=/path/to/0genlab node scripts/evaluate-run.mjs \
+ROLEBENCH_ROOT=/path/to/agent-auto-router node scripts/evaluate-run.mjs \
   --run-id "$RUN_ID" --project /path/to/project \
   --test-command '["npm","test"]' \
   --regression-command '["python3","regression_test.py"]'
 ```
 
-评测器只写结构化结果，不写入测试命令的 stdout/stderr。
+The evaluator writes structured results without storing test command stdout/stderr.
 
-若 Agent 能生成 usage 文件，可以同时记录 Token 和成本：
+### Sync model prices
 
 ```bash
-ROLEBENCH_ROOT=/path/to/0genlab node scripts/codex-run.mjs \
-  --role implementer --model deepseek-v4.1-flash \
-  --title "实现退款重试" \
-  --usage-file /tmp/codex-usage.json \
-  --input-price-per-million 0.5 \
-  --output-price-per-million 2 \
-  -- codex exec "实现退款重试"
+ROLEBENCH_ROOT=/path/to/agent-auto-router node scripts/sync-model-prices.mjs
 ```
 
-没有可信 usage 或没有同时提供输入/输出单价时，成本保持为空，不会猜测。
+The default snapshot is `data/model-price-snapshot.json`. It contains model IDs, input/output prices, currency, source, and fetch time. The file is generated data and is ignored by Git.
 
-也可以从 AIHubMix 实时模型目录生成价格快照，`codex-run` 会自动读取它：
-
-```bash
-ROLEBENCH_ROOT=/path/to/0genlab node scripts/sync-model-prices.mjs
-```
-
-快照默认写入 `data/model-price-snapshot.json`，包含模型 ID、输入/输出单价、币种、来源和抓取时间。每次价格更新后重新执行同步命令即可。
-
-### 批量对照实验
-
-使用任务文件把同一个角色任务运行到多个模型：
+### Run a multi-model experiment
 
 ```bash
-ROLEBENCH_ROOT=/path/to/0genlab node scripts/run-role-experiment.mjs \
+ROLEBENCH_ROOT=/path/to/agent-auto-router node scripts/run-role-experiment.mjs \
   --task schema/role-experiment.example.json \
   --role implementer \
   --models deepseek-v4.1-flash,deepseek-v4-pro
 ```
 
-任务格式见 `schema/ROLE_EXPERIMENTS.md`。每个模型独立记录和评测，结果写入 `data/experiments/`；这个命令只生成对比报告，不会自动修改角色配置。
-
-生成实验摘要：
+Each model gets an independent run and evaluation report. The command does not rewrite role configuration. Summarize a report with:
 
 ```bash
 node scripts/summarize-experiment.mjs \
   --report data/experiments/role-implementer-implementation-001.json
 ```
 
-摘要会明确显示 `insufficient_evidence` 或 `candidate`，不会因为某个模型便宜就直接推荐。
+The summary reports `insufficient_evidence` instead of recommending a cheap model without enough evidence. Aggregated recommendations use distinct task IDs rather than counting repeated runs of one task as independent evidence.
 
-多个任务的报告可以合并：
+### Ingest real Codex sessions
 
-```bash
-node scripts/summarize-experiment.mjs \
-  --reports-dir data/experiments \
-  --output data/experiments/implementer-summary.json
-```
-
-候选门槛按不同 `task_id` 统计，不会把同一个任务的重复运行误算成任务多样性。
-
-### 真实 Codex 会话后台记录
-
-不需要构造实验任务，可以直接导入本机已有 Codex session JSONL：
+Existing local Codex sessions can be ingested without creating synthetic experiments:
 
 ```bash
-ROLEBENCH_ROOT=/path/to/0genlab node scripts/ingest-codex-sessions.mjs
+ROLEBENCH_ROOT=/path/to/agent-auto-router node scripts/ingest-codex-sessions.mjs
 ```
 
-采集器只记录 session 元数据、角色、模型、耗时、Token 和成本，不复制 Prompt、响应、工具输出或源码；同一个 session ID 重复执行不会重复入账。
+The ingester records session metadata, role, model, latency, tokens, and cost. It does not copy prompts, responses, tool output, or source code, and repeated ingestion is deduplicated by session ID.
 
-## 红线
+## Design boundaries
 
-- 密钥只走环境变量，写入时脱敏（见 SCHEMA 原则 1）。
-- 不使用任何公司内部数据；全部数据自费走公开官方端点。
-- 派生指标只准脚本重算，禁止手改。
+- Secrets must come from environment variables and be redacted before persistence.
+- Objective evidence is preferred over an LLM judge in the default scoring path.
+- Missing usage, price, or evaluation evidence stays `null`; the system does not guess.
+- Jev is not part of the default Codex role chain or promotion path.
+- The core does not rewrite host configuration while operating in `shadow` mode.
+- Derived metrics should be regenerated by scripts rather than edited manually.
