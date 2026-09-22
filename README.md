@@ -1,7 +1,10 @@
 # agent-auto-router
 
-评测各模型在**同一个 agent** 下的真实表现：效果、成本、token 经济学。
-所有结论可复现：agent 版本钉死、任务客观打分、逐轮请求/响应全量落盘、直连官方端点自费运行。
+给 Agent 挑选合适模型的路由与评测工具：根据任务阶段、角色、历史表现、质量门槛和成本，为 Agent 推荐或选择最合适的模型。
+
+它不是单纯的模型排行榜，也不是只把请求转发到某个供应商的网关。核心闭环是：**Agent 声明任务 → router 识别角色和任务类型 → 从实时模型目录筛选候选 → 选择满足质量门槛且性价比最高的模型 → 执行任务 → 记录结果 → 用真实表现更新后续推荐**。
+
+所有选择都可回溯：记录 Agent、角色、模型、任务、测试结果、返工、耗时、Token、成本和证据；样本不足时只观察和推荐，不擅自切换。当前 Codex 接入是第一个宿主实现，其他 Agent 可以通过适配器接入。
 
 ## 核心资产
 
@@ -39,15 +42,30 @@
 
 本仓库当前的真实供应商接入是 AIHubMix 模型目录和 Codex session 中的 provider 元数据。模型 ID 以 AIHubMix 实时目录为准，不把 `gpt-*`、`claude-*`、`deepseek-*` 等 ID 误写成已完成直连。后续供应商接入应实现 `ModelCatalogProvider`，并补充协议、价格、能力和实际调用验证。
 
-## 角色模型策略实验层
+## 核心：给 Agent 挑选模型
 
-`configs/role-policy.json` 和 `scripts/role-run.mjs` 提供一个 additive 的多 Agent 角色评测层：
+`configs/role-policy.json`、`src/core/role-policy.mjs` 和 `scripts/role-run.mjs` 提供给 Agent 使用的模型选择能力：
 
 - 角色：`planner`、`researcher`、`explorer`、`implementer`、`e2e`、`reviewer`；
-- 记录：任务、角色、模型、测试、返工、耗时、token、成本和证据；
+- 选择依据：角色、任务类型、工具能力、模型可用性、历史质量、成功率、延迟、返工和成本；
+- 记录结果：任务、角色、模型、测试、返工、耗时、Token、成本和证据；
 - 评测：核心只使用测试、E2E、diff、回归、耗时、token、成本和人工验收等可追溯证据；LLM Judge 不进入默认评分链路；
 - 策略：默认 `shadow`，先统计和推荐，满足样本、质量、成功率和成本门槛后再考虑灰度/晋级；
 - 兼容：不修改现有 `data/runs/` 和 `data/scoreboard.jsonl` 的语义。
+
+典型调用链：
+
+```text
+Agent → start task(role, task profile)
+      → router loads live model catalog
+      → filter available/capable models
+      → compare quality gates, latency and cost
+      → recommend/select model
+      → Agent executes with that model
+      → router records evidence and updates policy
+```
+
+当前版本的自动切换默认处于 `shadow` 模式：router 会给出候选和切换理由，但不会未经批准改写宿主 Agent 的模型配置。满足样本量、成功率、质量和成本门槛后，才允许进入灰度或自动晋级。
 
 ### 通用核心与适配器边界
 
