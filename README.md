@@ -136,13 +136,13 @@ These defaults are independent baselines. They do not compete across providers.
 | Role | AIHubMix | Sub2API | OpenRouter |
 | --- | --- | --- | --- |
 | `planner` | `gpt-6-sol` | `gpt-6-sol` | `z-ai/glm-5.3` |
-| `researcher` | `kimi-k3` | `gpt-6-sol` | `moonshotai/kimi-k3` |
-| `explorer` | `deepseek-v4.1-flash` | `gpt-6-sol` | `deepseek/deepseek-v4.1-flash` |
-| `implementer` | `deepseek-v4.1-flash` | `gpt-6-sol` | `deepseek/deepseek-v4.1-flash` |
-| `e2e` | `claude-opus-5-5` | `gpt-6-sol` | `z-ai/glm-5.3` |
+| `researcher` | `kimi-k3` | `kimi-k3` | `moonshotai/kimi-k3` |
+| `explorer` | `deepseek-v4.1-flash` | `deepseek-v4-flash-0731` | `deepseek/deepseek-v4.1-flash` |
+| `implementer` | `deepseek-v4.1-flash` | `deepseek-v4-flash-0731` | `deepseek/deepseek-v4.1-flash` |
+| `e2e` | `claude-opus-5-5` | `claude-opus-5-5` | `z-ai/glm-5.3` |
 | `reviewer` | `gpt-6-sol` | `gpt-6-sol` | `z-ai/glm-5.3` |
 
-The defaults and all candidates were checked against the live catalogs on September 23, 2026. OpenRouter defaults use models that also passed account-level Responses API probes; catalog-only OpenAI and Anthropic entries that returned provider Terms of Service errors were not selected as defaults.
+The defaults and all candidates were checked against the live catalogs on September 23, 2026. Sub2API mirrors the AIHubMix role baseline where possible: its currently listed DeepSeek Flash ID is `deepseek-v4-flash-0731`, while `glm-5.2` replaces unavailable `glm-5.3` candidates. This is a manual observation baseline, not a quality or cost promotion: role-specific samples are insufficient and the policy remains in `shadow` mode. Catalog presence alone does not establish that every candidate works with every host. OpenRouter defaults use models that also passed account-level Responses API probes; catalog-only OpenAI and Anthropic entries that returned provider Terms of Service errors were not selected as defaults.
 
 ## How to use
 
