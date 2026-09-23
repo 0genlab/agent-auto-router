@@ -298,6 +298,7 @@ Each model gets an independent run and evaluation report. The command does not r
 
 ## Notes / 注意事项
 
+- All recorded run and imported session metadata is written locally under `data/role-runs/`. `0genlab` has no telemetry or data-upload endpoint and does not send this data to any remote service. Network access is limited to user-invoked catalog or price refreshes and the host's own model calls.
 - Codex runtime catalogs contain only the active `model_provider`. Model order follows the provider API, duplicate IDs keep their first occurrence, and a failed refresh falls back only to that provider's cache.
 - Provider identity is always `(provider, model)`. Catalogs, statistics, prices, recommendations, and promotion decisions are isolated by provider.
 - Recommendations remain in `shadow` mode and never rewrite host configuration. Automatic promotion requires provider-tagged, role-tagged, objectively evaluated samples.
@@ -309,6 +310,7 @@ Each model gets an independent run and evaluation report. The command does not r
 
 ## Design boundaries
 
+- Recorded role-run and imported session metadata remains local under `data/role-runs/`; the tool must not add telemetry or upload this data to a remote service.
 - Secrets must come from environment variables and be redacted before persistence.
 - Objective evidence is preferred over an LLM judge in the default scoring path.
 - Missing usage, price, or evaluation evidence stays `null`; the system does not guess.
