@@ -61,7 +61,7 @@ The host agent remains responsible for invoking the selected model and completin
 | Agent host | Hermes | 🧪 Preview | Read-only ingestion from `sessions` and `session_model_usage`; mixed model, provider, base URL, and billing mode usage is stored separately |
 | Agent host | Generic command-line agent | 🧪 Preview | Uses `adapters/codex/command-runner.mjs`; only Codex has been validated against a real session so far |
 | Model provider | AIHubMix | ✅ Validated | Reads `https://aihubmix.com/v1/models`; all current AIHubMix role defaults are present |
-| Model provider | Sub2API | ✅ Validated | Reads authenticated `https://ccsub.inferera.com/v1/models`; uses a separate role pool and statistics |
+| Model provider | Sub2API | ✅ Validated | Reads the authenticated `/v1/models` of a self-hosted [Sub2API](https://github.com/Wei-Shaw/sub2api) instance; uses a separate role pool and statistics |
 | Model provider | OpenRouter | ✅ Validated | Reads `https://openrouter.ai/api/v1/models`; Responses API was verified with DeepSeek, Kimi, and GLM models |
 | Direct providers | OpenAI, Anthropic, DeepSeek, and others | 🔌 Extension point | Direct connections still require their own catalog and execution adapters |
 | Persistence | JSONL | ✅ Validated | Stores structured task, role, model, quality, cost, and evidence metadata |
@@ -108,8 +108,8 @@ base_url = "https://aihubmix.com/v1"
 env_key = "AIHUBMIX_API_KEY"
 
 [model_providers.sub2api]
-base_url = "https://ccsub.inferera.com/v1"
-env_key = "AIHUBMIX_SUB_CX_API_KEY"
+base_url = "https://<your-sub2api-host>/v1"
+env_key = "SUB2API_API_KEY"
 
 [model_providers.openrouter]
 base_url = "https://openrouter.ai/api/v1"
@@ -146,14 +146,14 @@ The defaults and all candidates were checked against the live catalogs on Septem
 
 ## How to use
 
-Run these commands from the `0genlab` repository. The tool supports two complementary workflows:
+Run these commands from the repository root. The tool supports two complementary workflows:
 
 - **Execute and record:** wrap a host command or run one host stage, then store role, provider, model, status, latency, token, and cost metadata under `data/role-runs/`.
 - **Import and recommend:** ingest metadata from existing Codex, Claude Code, or Hermes sessions, evaluate objective evidence, and generate provider-scoped model recommendations.
 
 Prerequisites are Node.js 22+, the host CLI you intend to use (`codex`, `claude`, or `hermes`), and that host's existing authentication. Hermes session ingestion also requires Python 3 with its standard `sqlite3` module. The repository has no package installation step.
 
-The host remains responsible for calling its model and using tools. `0genlab` recommends and records the provider/model identity; it does not proxy requests or replace the host CLI.
+The host remains responsible for calling its model and using tools. `agent-auto-router` recommends and records the provider/model identity; it does not proxy requests or replace the host CLI.
 
 | Goal | Host | Entry point |
 | --- | --- | --- |
@@ -165,7 +165,7 @@ The host remains responsible for calling its model and using tools. `0genlab` re
 
 ### Use with Codex or another command-line agent
 
-`codex-run.mjs` starts a role run, executes the command after `--`, and records exit status and wall time. Use it for `codex exec` or any other command-line agent; the wrapped command does not need to know about `0genlab`. For normal interactive Codex use, keep using Codex as usual and run `ingest-codex-sessions.mjs` afterward to import session metadata.
+`codex-run.mjs` starts a role run, executes the command after `--`, and records exit status and wall time. Use it for `codex exec` or any other command-line agent; the wrapped command does not need to know about `agent-auto-router`. For normal interactive Codex use, keep using Codex as usual and run `ingest-codex-sessions.mjs` afterward to import session metadata.
 
 ```bash
 ROLEBENCH_ROOT="$PWD" node scripts/codex-run.mjs \
@@ -298,7 +298,7 @@ Each model gets an independent run and evaluation report. The command does not r
 
 ## Notes / 注意事项
 
-- All recorded run and imported session metadata is written locally under `data/role-runs/`. `0genlab` has no telemetry or data-upload endpoint and does not send this data to any remote service. Network access is limited to user-invoked catalog or price refreshes and the host's own model calls.
+- All recorded run and imported session metadata is written locally under `data/role-runs/`. `agent-auto-router` has no telemetry or data-upload endpoint and does not send this data to any remote service. Network access is limited to user-invoked catalog or price refreshes and the host's own model calls.
 - Codex runtime catalogs contain only the active `model_provider`. Model order follows the provider API, duplicate IDs keep their first occurrence, and a failed refresh falls back only to that provider's cache.
 - Provider identity is always `(provider, model)`. Catalogs, statistics, prices, recommendations, and promotion decisions are isolated by provider.
 - Recommendations remain in `shadow` mode and never rewrite host configuration. Automatic promotion requires provider-tagged, role-tagged, objectively evaluated samples.
@@ -319,3 +319,7 @@ Each model gets an independent run and evaluation report. The command does not r
 - The core does not rewrite host configuration while operating in `shadow` mode.
 - The policy core stays independent of Codex and any single provider.
 - Derived metrics should be regenerated by scripts rather than edited manually.
+
+## License
+
+[MIT](LICENSE)
