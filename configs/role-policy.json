@@ -1,6 +1,9 @@
 {
   "schema_version": 2,
   "mode": "shadow",
+  "provider_aliases": {
+    "ccsub": "sub2api"
+  },
   "candidate_gate": {
     "min_samples_per_model": 10,
     "min_success_rate": 0.9,
@@ -66,7 +69,7 @@
         }
       }
     },
-    "ccsub": {
+    "sub2api": {
       "catalog_endpoint": "https://ccsub.inferera.com/v1/models",
       "api_key_env": "AIHUBMIX_SUB_CX_API_KEY",
       "roles": {

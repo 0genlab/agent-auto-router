@@ -7,7 +7,7 @@ import { spawnSync } from "node:child_process";
 import { recommendRoles } from "../src/core/role-policy.mjs";
 import { assertAdapter, createTaskProfile } from "../src/core/contracts.mjs";
 import { createAihubmixModelCatalog } from "../adapters/aihubmix/model-catalog.mjs";
-import { createCcsubModelCatalog } from "../adapters/ccsub/model-catalog.mjs";
+import { createSub2apiModelCatalog } from "../adapters/sub2api/model-catalog.mjs";
 import { createOpenRouterModelCatalog } from "../adapters/openrouter/model-catalog.mjs";
 import { runRecordedCommand } from "../adapters/codex/command-runner.mjs";
 import { createObjectiveEvaluator } from "../adapters/command/objective-evaluator.mjs";
@@ -153,18 +153,18 @@ test("isolates statistics and promotion gates by provider", () => {
       provider: "ccsub",
       role: "planner",
       model: "gpt-5.6-sol",
-      taskId: `ccsub-task-${index}`,
+      taskId: `sub2api-task-${index}`,
       quality: 1,
       cost: 0.1,
       status: "failed"
     }));
   }
   const aihubmix = recommendRoles(policy, events, { provider: "aihubmix" }).find((item) => item.role === "planner");
-  const ccsub = recommendRoles(policy, events, { provider: "ccsub" }).find((item) => item.role === "planner");
+  const sub2api = recommendRoles(policy, events, { provider: "sub2api" }).find((item) => item.role === "planner");
   assert.equal(aihubmix.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.samples, 10);
-  assert.equal(ccsub.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.samples, 2);
+  assert.equal(sub2api.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.samples, 2);
   assert.equal(aihubmix.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.success_rate, 1);
-  assert.equal(ccsub.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.success_rate, 0);
+  assert.equal(sub2api.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.success_rate, 0);
 });
 
 test("returns a Pareto frontier and validates adapter contracts", () => {
@@ -199,9 +199,9 @@ test("loads the AIHubMix LLM catalog through an adapter", async () => {
   assert.equal(requestedUrl, "https://catalog.example/models");
 });
 
-test("loads the authenticated CCSub catalog through an adapter", async () => {
+test("loads the authenticated Sub2API catalog through an adapter", async () => {
   let authorization = null;
-  const catalog = createCcsubModelCatalog({
+  const catalog = createSub2apiModelCatalog({
     endpoint: "https://ccsub.example/v1/models",
     apiKey: "test-key",
     fetchImpl: async (_url, options) => {
@@ -210,7 +210,7 @@ test("loads the authenticated CCSub catalog through an adapter", async () => {
     }
   });
   const models = await catalog.listModels();
-  assert.equal(models[0].provider, "ccsub");
+  assert.equal(models[0].provider, "sub2api");
   assert.equal(authorization, "Bearer test-key");
 });
 
@@ -319,7 +319,7 @@ test("builds a model price snapshot with per-million-token prices", () => {
   });
   const snapshot = createPriceSnapshot([model], { source: "test", provider: "aihubmix" });
   assert.equal(findModelPrice(snapshot, "test-model", "aihubmix").input_price_per_million, 0.5);
-  assert.equal(findModelPrice(snapshot, "test-model", "ccsub"), null);
+  assert.equal(findModelPrice(snapshot, "test-model", "sub2api"), null);
   assert.equal(snapshot.pricing_unit, "per_million_tokens");
 });
 
@@ -469,8 +469,8 @@ test("rejects a catalog snapshot with mismatched provider identity", () => {
   policy.providers = { aihubmix: policy.providers.aihubmix };
   fs.writeFileSync(path.join(root, "configs", "role-policy.json"), JSON.stringify(policy));
   const models = [...new Set(Object.values(policy.providers.aihubmix.roles).flatMap((role) => role.candidates))]
-    .map((model_id) => ({ model_id, provider: "ccsub" }));
-  fs.writeFileSync(path.join(root, "data", "model-catalogs", "aihubmix.json"), JSON.stringify({ provider: "ccsub", models }));
+    .map((model_id) => ({ model_id, provider: "sub2api" }));
+  fs.writeFileSync(path.join(root, "data", "model-catalogs", "aihubmix.json"), JSON.stringify({ provider: "sub2api", models }));
   const result = spawnSync(process.execPath, [path.join(repoRoot, "scripts", "validate-provider-models.mjs")], {
     cwd: repoRoot,
     env: { ...process.env, ROLEBENCH_ROOT: root },

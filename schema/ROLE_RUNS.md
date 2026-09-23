@@ -95,6 +95,8 @@ Model identity is the pair `(provider, model)`. Catalogs, price snapshots,
 statistics, baselines, Pareto frontiers, recommendations, and promotion gates
 are isolated by provider. Events with `provider = "unknown"` can be displayed
 for audit purposes but cannot participate in provider promotion decisions.
+Historical events with the former provider ID `ccsub` are canonicalized to
+`sub2api` so existing evidence remains available after the rename.
 
 ## Recorded command adapter
 

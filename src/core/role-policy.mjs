@@ -3,6 +3,10 @@ export function average(values) {
   return present.length ? present.reduce((sum, value) => sum + value, 0) / present.length : null;
 }
 
+export function canonicalProvider(policy, provider) {
+  return policy?.provider_aliases?.[provider] || provider;
+}
+
 export function percentile(values, percentileValue) {
   const present = values.filter((value) => Number.isFinite(value)).sort((left, right) => left - right);
   if (!present.length) return null;
@@ -111,17 +115,18 @@ export function recommendRoles(policy, events, { provider = null } = {}) {
   const results = joinEvaluations(events);
   const candidateGate = policy.candidate_gate;
   const autoGate = policy.auto_promote_gate;
-  const providerPolicy = provider ? policy.providers?.[provider] : null;
+  const resolvedProvider = canonicalProvider(policy, provider);
+  const providerPolicy = resolvedProvider ? policy.providers?.[resolvedProvider] : null;
   const roles = providerPolicy?.roles || policy.roles;
-  if (!roles) throw new Error(provider ? `provider policy not found: ${provider}` : "role policy not found");
-  const providerResults = provider
-    ? results.filter((event) => event.provider === provider)
+  if (!roles) throw new Error(resolvedProvider ? `provider policy not found: ${resolvedProvider}` : "role policy not found");
+  const providerResults = resolvedProvider
+    ? results.filter((event) => canonicalProvider(policy, event.provider) === resolvedProvider)
     : results;
   return Object.entries(roles).map(([role, config]) => {
     const candidates = config.candidates.map((model) => {
       const summary = metrics(providerResults.filter((event) => event.role === role && event.model === model));
       return {
-        provider,
+        provider: resolvedProvider,
         model,
         eligible: passesCandidateGate(summary, candidateGate),
         metrics: summary
@@ -150,7 +155,7 @@ export function recommendRoles(policy, events, { provider = null } = {}) {
       && recommended.metrics.quality_avg >= autoGate.min_quality_score
       && comparisonResult?.eligible === true;
     return {
-      provider,
+      provider: resolvedProvider,
       role,
       default_model: config.default_model,
       recommended_model: recommended?.model || config.default_model,

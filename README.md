@@ -45,7 +45,7 @@ The current release focuses on role-based model evaluation and switching decisio
 | Agent host | Generic command-line agent | 🧪 Preview | Uses `adapters/codex/command-runner.mjs`; only Codex has been validated against a real session so far |
 | Agent host | Hermes | 📦 Benchmark reference | Existing Hermes benchmark data can be used as experiment input, but the public core does not couple to the Hermes runtime |
 | Model provider | AIHubMix | ✅ Validated | Reads `https://aihubmix.com/v1/models`; all current AIHubMix role defaults are present |
-| Model provider | CCSub | ✅ Validated | Reads authenticated `https://ccsub.inferera.com/v1/models`; uses a separate role pool and statistics |
+| Model provider | Sub2API | ✅ Validated | Reads authenticated `https://ccsub.inferera.com/v1/models`; uses a separate role pool and statistics |
 | Model provider | OpenRouter | ✅ Validated | Reads `https://openrouter.ai/api/v1/models`; Responses API was verified with DeepSeek, Kimi, and GLM models |
 | Direct providers | OpenAI, Anthropic, DeepSeek, and others | 🔌 Extension point | Direct connections still require their own catalog and execution adapters |
 | Persistence | JSONL | ✅ Validated | Stores structured task, role, model, quality, cost, and evidence metadata |
@@ -57,9 +57,61 @@ The current release focuses on role-based model evaluation and switching decisio
 
 ### Provider boundary
 
-The model identity is the pair `(provider, model)`. AIHubMix, CCSub, and OpenRouter have separate catalogs, role defaults, candidate pools, price snapshots, statistics, recommendations, and promotion decisions. A result from `aihubmix/gpt-5.6-sol` never contributes to `ccsub/gpt-5.6-sol`. Events without a provider are treated as `unknown` and are excluded from provider promotion decisions.
+The model identity is the pair `(provider, model)`. AIHubMix, Sub2API, and OpenRouter have separate catalogs, role defaults, candidate pools, price snapshots, statistics, recommendations, and promotion decisions. A result from `aihubmix/gpt-5.6-sol` never contributes to `sub2api/gpt-5.6-sol`. Historical events using the former provider ID `ccsub` are canonicalized to `sub2api`; events without a provider are treated as `unknown` and are excluded from provider promotion decisions.
 
 OpenRouter uses namespaced IDs such as `deepseek/deepseek-v4.1-flash`. Catalog presence does not guarantee account-level execution: models blocked by provider terms are not used as defaults even when they appear in `/models`.
+
+### Provider configuration and activation
+
+Provider control currently has two separate layers:
+
+| Layer | Configuration | What it controls |
+| --- | --- | --- |
+| Router policy | `configs/role-policy.json` | Registered providers, provider-specific role defaults, candidate pools, statistics, recommendations, and promotion gates |
+| Agent runtime | Host configuration, for example `~/.codex/config.toml` and `~/.codex/agents/*.toml` | Which provider and model actually execute a main or sub-agent session |
+
+A provider present under `providers` in `configs/role-policy.json` participates in catalog validation and provider-specific recommendations. The current schema does not yet expose a separate `enabled`, `catalog_enabled`, or `routing_enabled` flag; removing or adding a provider is therefore a policy change rather than a runtime toggle.
+
+For Codex, provider selection is explicit:
+
+```toml
+model_provider = "aihubmix"
+model = "gpt-5.6-sol"
+
+[model_providers.aihubmix]
+base_url = "https://aihubmix.com/v1"
+env_key = "AIHUBMIX_API_KEY"
+
+[model_providers.sub2api]
+base_url = "https://ccsub.inferera.com/v1"
+env_key = "AIHUBMIX_SUB_CX_API_KEY"
+
+[model_providers.openrouter]
+base_url = "https://openrouter.ai/api/v1"
+env_key = "OPENROUTER_API_KEY"
+```
+
+A role config must set both values when overriding the host default:
+
+```toml
+model_provider = "aihubmix"
+model = "deepseek-v4.1-flash"
+```
+
+### Current provider defaults
+
+These defaults are independent baselines. They do not compete across providers.
+
+| Role | AIHubMix | Sub2API | OpenRouter |
+| --- | --- | --- | --- |
+| `planner` | `gpt-5.6-sol` | `gpt-5.6-sol` | `z-ai/glm-5.3` |
+| `researcher` | `kimi-k3` | `gpt-5.6-sol` | `moonshotai/kimi-k3` |
+| `explorer` | `deepseek-v4.1-flash` | `gpt-5.6-sol` | `deepseek/deepseek-v4.1-flash` |
+| `implementer` | `deepseek-v4.1-flash` | `gpt-5.6-sol` | `deepseek/deepseek-v4.1-flash` |
+| `e2e` | `claude-opus-5` | `gpt-5.6-sol` | `z-ai/glm-5.3` |
+| `reviewer` | `gpt-5.6-sol` | `gpt-5.6-sol` | `z-ai/glm-5.3` |
+
+The defaults and all candidates were checked against the live catalogs on September 23, 2026. OpenRouter defaults use models that also passed account-level Responses API probes; catalog-only OpenAI and Anthropic entries that returned provider Terms of Service errors were not selected as defaults.
 
 ## How it works
 
@@ -71,6 +123,8 @@ OpenRouter uses namespaced IDs such as `deepseek/deepseek-v4.1-flash`. Catalog p
 - **Evidence recording:** persist the selected model, execution result, tests, tokens, cost, and evidence references.
 - **Policy updates:** aggregate results by role and distinct task; recommend a switch only when the configured sample and quality gates are met.
 - **Safety default:** remain in `shadow` mode and never rewrite host configuration without an explicit promotion step.
+
+Passive sessions tagged only as `role = main` are useful for provider usage and cost reporting, but they do not count as `planner`, `implementer`, or other role-specific evidence. Automatic promotion requires provider-tagged, role-tagged, objectively evaluated samples for both the candidate and its provider-local baseline.
 
 ### Operating principle
 
@@ -157,6 +211,14 @@ ROLEBENCH_ROOT=/path/to/agent-auto-router node scripts/validate-provider-models.
 
 The validator fails when a provider-specific default or candidate is missing from that provider's live catalog.
 
+Current catalog endpoints and credentials:
+
+| Provider | Catalog | Authentication |
+| --- | --- | --- |
+| AIHubMix | `https://aihubmix.com/v1/models` | Public catalog; execution uses `AIHUBMIX_API_KEY` |
+| Sub2API | `https://ccsub.inferera.com/v1/models` | Bearer token from `AIHUBMIX_SUB_CX_API_KEY` |
+| OpenRouter | `https://openrouter.ai/api/v1/models` | Public catalog; execution uses `OPENROUTER_API_KEY` |
+
 ### Sync model prices
 
 ```bash
@@ -164,7 +226,7 @@ ROLEBENCH_ROOT=/path/to/agent-auto-router node scripts/sync-model-prices.mjs --p
 ROLEBENCH_ROOT=/path/to/agent-auto-router node scripts/sync-model-prices.mjs --provider openrouter
 ```
 
-Snapshots are written to `data/model-price-snapshots/<provider>.json`. AIHubMix and OpenRouter prices are never shared, even when model names look similar. CCSub cost remains `null` until a trusted CCSub price source is configured.
+Snapshots are written to `data/model-price-snapshots/<provider>.json`. AIHubMix and OpenRouter prices are never shared, even when model names look similar. Sub2API cost remains `null` until a trusted Sub2API price source is configured.
 
 ### Run a multi-model experiment
 

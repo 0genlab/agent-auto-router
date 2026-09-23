@@ -4,12 +4,12 @@ import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
 import { createAihubmixModelCatalog } from "../adapters/aihubmix/model-catalog.mjs";
-import { createCcsubModelCatalog } from "../adapters/ccsub/model-catalog.mjs";
+import { createSub2apiModelCatalog } from "../adapters/sub2api/model-catalog.mjs";
 import { createOpenRouterModelCatalog } from "../adapters/openrouter/model-catalog.mjs";
 
 const root = process.env.ROLEBENCH_ROOT || path.resolve(import.meta.dirname, "..");
 const outputDir = process.env.ROLEBENCH_MODEL_CATALOGS || path.join(root, "data", "model-catalogs");
-const catalogs = [createAihubmixModelCatalog(), createCcsubModelCatalog(), createOpenRouterModelCatalog()];
+const catalogs = [createAihubmixModelCatalog(), createSub2apiModelCatalog(), createOpenRouterModelCatalog()];
 
 try {
   fs.mkdirSync(outputDir, { recursive: true });

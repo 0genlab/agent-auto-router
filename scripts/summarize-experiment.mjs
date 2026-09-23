@@ -3,6 +3,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import process from "node:process";
+import { canonicalProvider } from "../src/core/role-policy.mjs";
 
 function option(args, name, fallback = null) {
   const index = args.indexOf(name);
@@ -87,7 +88,7 @@ try {
   const runsByProvider = new Map();
   const registeredProviders = new Set(Object.keys(policy.providers || {}));
   for (const run of runs) {
-    const provider = run.provider || "unknown";
+    const provider = canonicalProvider(policy, run.provider || "unknown");
     const current = runsByProvider.get(provider) || [];
     current.push(run);
     runsByProvider.set(provider, current);
