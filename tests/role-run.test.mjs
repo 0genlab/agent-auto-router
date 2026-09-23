@@ -41,7 +41,7 @@ test("records a role run and keeps recommendations in shadow mode", () => {
   const recommendation = JSON.parse(run(root, ["recommend", "--provider", "aihubmix"]));
 
   assert.equal(recommendation.mode, "shadow");
-  assert.equal(recommendation.roles.find((role) => role.role === "implementer").recommended_model, "deepseek-v4.1-flash");
+  assert.equal(recommendation.roles.find((role) => role.role === "implementer").recommended_model, "gpt-6-sol");
 });
 
 function finishedEvent({ role, model, taskId, quality, cost, provider = "aihubmix", latency = 100, status = "success", regression = false }) {
@@ -89,7 +89,7 @@ test("auto-promotes only an objective, cheaper implementer candidate", () => {
     const taskId = `task-${index % 5}`;
     events.push(finishedEvent({
       role: "implementer",
-      model: "deepseek-v4.1-flash",
+      model: "gpt-6-sol",
       taskId,
       quality: 4.4,
       cost: 1,
@@ -115,7 +115,7 @@ test("does not auto-promote against an under-sampled baseline", () => {
   const policy = loadPolicy();
   const events = [finishedEvent({
     role: "implementer",
-    model: "deepseek-v4.1-flash",
+    model: "gpt-6-sol",
     taskId: "baseline-task",
     quality: 4.5,
     cost: 1
@@ -142,7 +142,7 @@ test("isolates statistics and promotion gates by provider", () => {
     events.push(finishedEvent({
       provider: "aihubmix",
       role: "planner",
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       taskId: `aihubmix-task-${index}`,
       quality: 4.5,
       cost: 1
@@ -152,7 +152,7 @@ test("isolates statistics and promotion gates by provider", () => {
     events.push(finishedEvent({
       provider: "ccsub",
       role: "planner",
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       taskId: `sub2api-task-${index}`,
       quality: 1,
       cost: 0.1,
@@ -161,10 +161,10 @@ test("isolates statistics and promotion gates by provider", () => {
   }
   const aihubmix = recommendRoles(policy, events, { provider: "aihubmix" }).find((item) => item.role === "planner");
   const sub2api = recommendRoles(policy, events, { provider: "sub2api" }).find((item) => item.role === "planner");
-  assert.equal(aihubmix.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.samples, 10);
-  assert.equal(sub2api.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.samples, 2);
-  assert.equal(aihubmix.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.success_rate, 1);
-  assert.equal(sub2api.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.success_rate, 0);
+  assert.equal(aihubmix.candidates.find((item) => item.model === "gpt-6-sol").metrics.samples, 10);
+  assert.equal(sub2api.candidates.find((item) => item.model === "gpt-6-sol").metrics.samples, 2);
+  assert.equal(aihubmix.candidates.find((item) => item.model === "gpt-6-sol").metrics.success_rate, 1);
+  assert.equal(sub2api.candidates.find((item) => item.model === "gpt-6-sol").metrics.success_rate, 0);
 });
 
 test("returns a Pareto frontier and validates adapter contracts", () => {
@@ -206,7 +206,7 @@ test("loads the authenticated Sub2API catalog through an adapter", async () => {
     apiKey: "test-key",
     fetchImpl: async (_url, options) => {
       authorization = options.headers.Authorization;
-      return { ok: true, async json() { return { data: [{ id: "gpt-5.6-sol" }] }; } };
+      return { ok: true, async json() { return { data: [{ id: "gpt-6-sol" }] }; } };
     }
   });
   const models = await catalog.listModels();
@@ -488,7 +488,7 @@ test("ingests Codex session metadata without copying conversation content", () =
   const sessionPath = path.join(root, "session.jsonl");
   const records = [
     { timestamp: "2026-09-22T12:00:00.000Z", type: "session_meta", payload: { session_id: "session-1", cwd: root, source: { subagent: "review" }, model_provider: "aihubmix" } },
-    { timestamp: "2026-09-22T12:00:01.000Z", type: "turn_context", payload: { model: "gpt-5.6-sol", cwd: root } },
+    { timestamp: "2026-09-22T12:00:01.000Z", type: "turn_context", payload: { model: "gpt-6-sol", cwd: root } },
     { timestamp: "2026-09-22T12:00:02.000Z", type: "event_msg", payload: { type: "user_message", message: "secret prompt" } },
     { timestamp: "2026-09-22T12:00:03.000Z", type: "event_msg", payload: { type: "agent_message", message: "secret response" } },
     { timestamp: "2026-09-22T12:00:04.000Z", type: "token_usage_record", payload: { response_id: "response-1", usage: { input_tokens: 1000, output_tokens: 500, total_tokens: 1500 } } }
@@ -496,14 +496,14 @@ test("ingests Codex session metadata without copying conversation content", () =
   fs.writeFileSync(sessionPath, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
   const parsed = parseSessionFile(sessionPath);
   assert.equal(parsed.role, "reviewer");
-  assert.equal(parsed.model, "gpt-5.6-sol");
+  assert.equal(parsed.model, "gpt-6-sol");
   assert.equal(parsed.usage.total_tokens, 1500);
   assert.equal(Object.hasOwn(parsed, "prompt"), false);
   const store = createRoleRunStore(path.join(root, "runs"));
   const ingested = ingestSessionFiles({
     files: [sessionPath],
     store,
-    priceSnapshot: createPriceSnapshot([{ model_id: "gpt-5.6-sol", pricing: { input: 1, output: 2 } }], { provider: "aihubmix" })
+    priceSnapshot: createPriceSnapshot([{ model_id: "gpt-6-sol", pricing: { input: 1, output: 2 } }], { provider: "aihubmix" })
   });
   assert.equal(ingested.length, 1);
   const events = store.readEvents();

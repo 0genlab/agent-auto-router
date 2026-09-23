@@ -57,7 +57,7 @@ The current release focuses on role-based model evaluation and switching decisio
 
 ### Provider boundary
 
-The model identity is the pair `(provider, model)`. AIHubMix, Sub2API, and OpenRouter have separate catalogs, role defaults, candidate pools, price snapshots, statistics, recommendations, and promotion decisions. A result from `aihubmix/gpt-5.6-sol` never contributes to `sub2api/gpt-5.6-sol`. Historical events using the former provider ID `ccsub` are canonicalized to `sub2api`; events without a provider are treated as `unknown` and are excluded from provider promotion decisions.
+The model identity is the pair `(provider, model)`. AIHubMix, Sub2API, and OpenRouter have separate catalogs, role defaults, candidate pools, price snapshots, statistics, recommendations, and promotion decisions. A result from `aihubmix/gpt-6-sol` never contributes to `sub2api/gpt-6-sol`. Historical events using the former provider ID `ccsub` are canonicalized to `sub2api`; events without a provider are treated as `unknown` and are excluded from provider promotion decisions.
 
 OpenRouter uses namespaced IDs such as `deepseek/deepseek-v4.1-flash`. Catalog presence does not guarantee account-level execution: models blocked by provider terms are not used as defaults even when they appear in `/models`.
 
@@ -76,7 +76,7 @@ For Codex, provider selection is explicit:
 
 ```toml
 model_provider = "aihubmix"
-model = "gpt-5.6-sol"
+model = "gpt-6-sol"
 
 [model_providers.aihubmix]
 base_url = "https://aihubmix.com/v1"
@@ -104,12 +104,12 @@ These defaults are independent baselines. They do not compete across providers.
 
 | Role | AIHubMix | Sub2API | OpenRouter |
 | --- | --- | --- | --- |
-| `planner` | `gpt-5.6-sol` | `gpt-5.6-sol` | `z-ai/glm-5.3` |
-| `researcher` | `kimi-k3` | `gpt-5.6-sol` | `moonshotai/kimi-k3` |
-| `explorer` | `deepseek-v4.1-flash` | `gpt-5.6-sol` | `deepseek/deepseek-v4.1-flash` |
-| `implementer` | `deepseek-v4.1-flash` | `gpt-5.6-sol` | `deepseek/deepseek-v4.1-flash` |
-| `e2e` | `claude-opus-5` | `gpt-5.6-sol` | `z-ai/glm-5.3` |
-| `reviewer` | `gpt-5.6-sol` | `gpt-5.6-sol` | `z-ai/glm-5.3` |
+| `planner` | `gpt-6-sol` | `gpt-6-sol` | `openai/gpt-6-sol` |
+| `researcher` | `gpt-6-sol` | `gpt-6-sol` | `openai/gpt-6-sol` |
+| `explorer` | `gpt-6-sol` | `gpt-6-sol` | `openai/gpt-6-sol` |
+| `implementer` | `gpt-6-sol` | `gpt-6-sol` | `openai/gpt-6-sol` |
+| `e2e` | `gpt-6-sol` | `gpt-6-sol` | `openai/gpt-6-sol` |
+| `reviewer` | `gpt-6-sol` | `gpt-6-sol` | `openai/gpt-6-sol` |
 
 The defaults and all candidates were checked against the live catalogs on September 23, 2026. OpenRouter defaults use models that also passed account-level Responses API probes; catalog-only OpenAI and Anthropic entries that returned provider Terms of Service errors were not selected as defaults.
 
