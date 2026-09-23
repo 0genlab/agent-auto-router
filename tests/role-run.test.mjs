@@ -534,3 +534,115 @@ test("deduplicates repeated files for the same Codex session", () => {
   assert.equal(result.length, 1);
   assert.equal(store.readEvents().filter((event) => event.event === "agent_finished").length, 1);
 });
+
+test("keeps sibling subagents separate and attributes each model segment", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "0genlab-codex-segments-"));
+  const store = createRoleRunStore(path.join(root, "runs"));
+  const write = (name, id, role, records) => {
+    const file = path.join(root, `${name}.jsonl`);
+    fs.writeFileSync(file, [
+      { timestamp: "2026-09-23T00:00:00Z", type: "session_meta", payload: {
+        id, session_id: "parent", cwd: root, model_provider: "aihubmix",
+        source: { subagent: { thread_spawn: { agent_role: role } } }
+      } }, ...records
+    ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+    return file;
+  };
+  const first = write("first", "child-1", "explorer", [
+    { timestamp: "2026-09-23T00:00:01Z", type: "turn_context", payload: { model: "model-a" } },
+    { timestamp: "2026-09-23T00:00:02Z", type: "token_usage_record", payload: { response_id: "a", usage: { input_tokens: 10, output_tokens: 2, total_tokens: 12 } } },
+    { timestamp: "2026-09-23T00:00:03Z", type: "turn_context", payload: { model: "model-b" } },
+    { timestamp: "2026-09-23T00:00:04Z", type: "token_usage_record", payload: { response_id: "b", usage: { input_tokens: 20, output_tokens: 3, total_tokens: 23 } } },
+    { timestamp: "2026-09-23T00:00:05Z", type: "event_msg", payload: { type: "task_complete" } }
+  ]);
+  const second = write("second", "child-2", "reviewer", [
+    { timestamp: "2026-09-23T00:00:01Z", type: "turn_context", payload: { model: "model-c" } },
+    { timestamp: "2026-09-23T00:00:02Z", type: "event_msg", payload: { type: "task_complete" } }
+  ]);
+  assert.equal(ingestSessionFiles({ files: [first, second], store }).length, 2);
+  const events = store.readEvents().filter((event) => event.event === "agent_finished");
+  assert.deepEqual(events.map((event) => [event.role, event.model, event.total_tokens, event.status]), [
+    ["explorer", "model-a", 12, "unknown"],
+    ["explorer", "model-b", 23, "success"],
+    ["reviewer", "model-c", null, "success"]
+  ]);
+  assert.deepEqual(events.map((event) => event.run_id), ["codex-child-1", "codex-child-1", "codex-child-2"]);
+
+  assert.equal(ingestSessionFiles({ files: [first, second], store }).length, 0);
+  fs.appendFileSync(first, `${JSON.stringify({
+    timestamp: "2026-09-23T00:00:06Z", type: "token_usage_record",
+    payload: { response_id: "c", usage: { input_tokens: 5, output_tokens: 1, total_tokens: 6 } }
+  })}\n`);
+  assert.equal(ingestSessionFiles({ files: [first], store }).length, 1);
+  const refreshed = store.readEvents().filter((event) => event.event === "agent_finished");
+  assert.equal(refreshed.length, 3);
+  assert.equal(refreshed.find((event) => event.model === "model-b").total_tokens, 29);
+});
+
+test("does not replace a run owned by another recorder", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "0genlab-codex-owned-"));
+  const store = createRoleRunStore(path.join(root, "runs"));
+  store.createRun({ run_id: "codex-shared", source: "manual" }, { event: "run_started" });
+  const file = path.join(root, "session.jsonl");
+  fs.writeFileSync(file, `${JSON.stringify({ type: "session_meta", payload: { id: "shared" } })}\n`);
+  assert.throws(() => ingestSessionFiles({ files: [file], store }), /non-matching run/);
+  assert.equal(store.readEvents().length, 1);
+});
+
+test("migrates an old child run stored under its parent ID", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "0genlab-codex-legacy-"));
+  const store = createRoleRunStore(path.join(root, "runs"));
+  const child = path.join(root, "child.jsonl");
+  const parent = path.join(root, "parent.jsonl");
+  fs.writeFileSync(child, `${JSON.stringify({
+    type: "session_meta", payload: { id: "child", session_id: "parent", cwd: root,
+      source: { subagent: { thread_spawn: { agent_role: "reviewer" } } } }
+  })}\n`);
+  fs.writeFileSync(parent, `${JSON.stringify({
+    type: "session_meta", payload: { id: "parent", session_id: "parent", cwd: root }
+  })}\n`);
+  store.createRun({
+    run_id: "codex-parent", source: "codex-session-jsonl",
+    session_id: "parent", session_file: child
+  }, { event: "run_started" });
+  assert.equal(ingestSessionFiles({ files: [parent, child], store }).length, 2);
+  assert.deepEqual(store.readEvents().filter((event) => event.event === "agent_finished")
+    .map((event) => [event.run_id, event.role]), [
+    ["codex-child", "reviewer"], ["codex-parent", "main"]
+  ]);
+});
+
+test("ignores an active session's partial final line and groups returning models", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "0genlab-codex-active-"));
+  const file = path.join(root, "session.jsonl");
+  const records = [
+    { type: "session_meta", payload: { id: "../unsafe", model_provider: "aihubmix" } },
+    { type: "turn_context", payload: { model: "a" } },
+    { type: "token_usage_record", payload: { response_id: "one", usage: { total_tokens: 10 } } },
+    { type: "turn_context", payload: { model: "b" } },
+    { type: "token_usage_record", payload: { response_id: "two", usage: { total_tokens: 20 } } },
+    { type: "turn_context", payload: { model: "a" } },
+    { type: "token_usage_record", payload: { response_id: "three", usage: { total_tokens: 30 } } },
+    { type: "event_msg", payload: { type: "task_complete" } }
+  ];
+  fs.writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join("\n")}\n{"timestamp":`);
+  const parsed = parseSessionFile(file);
+  assert.match(parsed.session_id, /^[a-f0-9]{64}$/);
+  assert.deepEqual(parsed.segments.map(({ model, usage }) => [model, usage.total_tokens]), [
+    ["a", 40], ["b", 20]
+  ]);
+  const store = createRoleRunStore(path.join(root, "runs"));
+  ingestSessionFiles({ files: [file], store });
+  assert.equal(store.readEvents().filter((event) => event.event === "agent_finished").length, 2);
+});
+
+test("ignores an unsafe parent session ID when migrating aliases", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "0genlab-codex-parent-"));
+  const file = path.join(root, "session.jsonl");
+  fs.writeFileSync(file, `${JSON.stringify({
+    type: "session_meta", payload: { id: "child", session_id: "../outside" }
+  })}\n`);
+  assert.equal(parseSessionFile(file).parent_session_id, null);
+  const store = createRoleRunStore(path.join(root, "runs"));
+  assert.equal(ingestSessionFiles({ files: [file], store }).length, 1);
+});
