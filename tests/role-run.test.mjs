@@ -41,7 +41,7 @@ test("records a role run and keeps recommendations in shadow mode", () => {
   const recommendation = JSON.parse(run(root, ["recommend", "--provider", "aihubmix"]));
 
   assert.equal(recommendation.mode, "shadow");
-  assert.equal(recommendation.roles.find((role) => role.role === "implementer").recommended_model, "gpt-6-sol");
+  assert.equal(recommendation.roles.find((role) => role.role === "implementer").recommended_model, "deepseek-v4.1-flash");
 });
 
 function finishedEvent({ role, model, taskId, quality, cost, provider = "aihubmix", latency = 100, status = "success", regression = false }) {
@@ -89,7 +89,7 @@ test("auto-promotes only an objective, cheaper implementer candidate", () => {
     const taskId = `task-${index % 5}`;
     events.push(finishedEvent({
       role: "implementer",
-      model: "gpt-6-sol",
+      model: "deepseek-v4.1-flash",
       taskId,
       quality: 4.4,
       cost: 1,
@@ -115,7 +115,7 @@ test("does not auto-promote against an under-sampled baseline", () => {
   const policy = loadPolicy();
   const events = [finishedEvent({
     role: "implementer",
-    model: "gpt-6-sol",
+    model: "deepseek-v4.1-flash",
     taskId: "baseline-task",
     quality: 4.5,
     cost: 1
