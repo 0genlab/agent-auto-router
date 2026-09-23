@@ -65,6 +65,23 @@ function loadPolicy() {
   return JSON.parse(fs.readFileSync(path.join(repoRoot, "configs", "role-policy.json"), "utf8"));
 }
 
+test("Sub2API observation defaults are catalog candidates in shadow mode", () => {
+  const policy = loadPolicy();
+  const roles = policy.providers.sub2api.roles;
+  assert.equal(policy.mode, "shadow");
+  assert.deepEqual(Object.fromEntries(Object.entries(roles).map(([role, config]) => [role, config.default_model])), {
+    planner: "gpt-6-sol",
+    researcher: "kimi-k3",
+    explorer: "deepseek-v4-flash-0731",
+    implementer: "deepseek-v4-flash-0731",
+    e2e: "claude-opus-5-5",
+    reviewer: "gpt-6-sol"
+  });
+  for (const config of Object.values(roles)) {
+    assert.ok(config.candidates.includes(config.default_model));
+  }
+});
+
 test("requires the distinct-task candidate gate", () => {
   const policy = loadPolicy();
   const events = Array.from({ length: 10 }, (_, index) => finishedEvent({
