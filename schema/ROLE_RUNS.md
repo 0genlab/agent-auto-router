@@ -75,7 +75,7 @@ data/role-runs/{run_id}/
 
 ## Adapter contracts
 
-The core does not depend on Codex, AIHubMix, or JSONL. Adapters expose three
+The core does not depend on Codex, a specific model provider, or JSONL. Adapters expose three
 small contracts:
 
 - `AgentAdapter`: `name`, `run(input)`
@@ -90,6 +90,11 @@ Recommendations expose a `pareto_frontier`: eligible models that are not
 dominated across quality, success rate, cost, P95 latency, regression, and
 rework. The default recommendation remains conservative and does not mutate
 role configuration in `shadow` mode.
+
+Model identity is the pair `(provider, model)`. Catalogs, price snapshots,
+statistics, baselines, Pareto frontiers, recommendations, and promotion gates
+are isolated by provider. Events with `provider = "unknown"` can be displayed
+for audit purposes but cannot participate in provider promotion decisions.
 
 ## Recorded command adapter
 
@@ -138,10 +143,12 @@ priced by the caller. `codex-run.mjs` accepts `--usage-file`,
 `--input-price-per-million`, and `--output-price-per-million`; without a
 trusted usage source or both explicit prices, `cost_usd` remains `null`.
 
-Run `node scripts/sync-model-prices.mjs` to generate the local price snapshot
-from AIHubMix's live LLM catalog. The snapshot is a derived cache and includes
-its source and fetch time; it is never treated as a historical replacement for
-the raw usage evidence.
+Run `node scripts/sync-provider-catalogs.mjs` followed by
+`node scripts/validate-provider-models.mjs` to verify every provider-specific
+default and candidate. Run `node scripts/sync-model-prices.mjs --provider
+<provider>` to generate a provider-specific price snapshot. A snapshot is a
+derived cache and includes its source and fetch time; it is never treated as a
+historical replacement for the raw usage evidence.
 
 The objective evaluator also calculates an explainable `quality_score` from
 tests, regression, diff cleanliness, rework, and optional human acceptance.

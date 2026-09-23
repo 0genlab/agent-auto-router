@@ -66,6 +66,7 @@ try {
     run_id: runId,
     role: latest.role,
     model: latest.model,
+    provider: latest.provider,
     timestamp: new Date().toISOString(),
     ...evaluation
   });

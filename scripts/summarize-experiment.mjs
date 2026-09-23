@@ -81,15 +81,36 @@ try {
   const policy = JSON.parse(fs.readFileSync(policyPath, "utf8"));
   const reports = reportPaths(args, root);
   const report = reports[0].report;
+  const roles = new Set(reports.map(({ report: current }) => current.role));
+  if (roles.size !== 1) throw new Error("cannot summarize reports from different roles");
   const runs = reports.flatMap(({ report: current }) => current.runs || []);
+  const runsByProvider = new Map();
+  const registeredProviders = new Set(Object.keys(policy.providers || {}));
+  for (const run of runs) {
+    const provider = run.provider || "unknown";
+    const current = runsByProvider.get(provider) || [];
+    current.push(run);
+    runsByProvider.set(provider, current);
+  }
   const summary = {
-    schema_version: 1,
+    schema_version: 2,
     reports: reports.map(({ path: reportPath }) => reportPath),
     experiment_ids: reports.map(({ report: current }) => current.experiment_id),
     role: report.role,
     task: report.task,
     tasks: [...new Set(runs.map((run) => run.task_id).filter(Boolean))],
-    ...summarizeRuns(runs, policy)
+    providers: Object.fromEntries([...runsByProvider.entries()].map(([provider, providerRuns]) => [
+      provider,
+      registeredProviders.has(provider)
+        ? { ...summarizeRuns(providerRuns, policy), registered: true, promotion_eligible: true }
+        : {
+            ...summarizeRuns(providerRuns, policy),
+            registered: false,
+            promotion_eligible: false,
+            recommendation_status: "unregistered_provider",
+            recommended_model: null
+          }
+    ]))
   };
   const output = option(args, "--output", null);
   const serialized = `${JSON.stringify(summary, null, 2)}\n`;

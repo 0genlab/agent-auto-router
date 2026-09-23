@@ -1,4 +1,4 @@
-# Role experiment task schema v1
+# Role experiment task schema v2
 
 `run-role-experiment.mjs` uses a task file to run the same task against several
 models. The command is an argument array; it is not passed through a shell.
@@ -8,6 +8,7 @@ models. The command is an argument array; it is not passed through a shell.
   "id": "implementation-001",
   "title": "Implement refund retry",
   "role": "implementer",
+  "provider": "aihubmix",
   "type": "implementation",
   "task_family": "implementation",
   "project": "/workspace/project",
@@ -26,4 +27,5 @@ models. The command is an argument array; it is not passed through a shell.
 
 The runner creates one `role-runs` record per model and writes one comparison
 report under `data/experiments/`. It does not change role configuration or
-promote a model.
+promote a model. One experiment belongs to one provider; compare another
+provider in a separate experiment so evidence and promotion remain isolated.

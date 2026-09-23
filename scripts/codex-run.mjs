@@ -40,7 +40,9 @@ if (!command) {
 const cli = createCodexRoleRunCli();
 try {
   const root = process.env.ROLEBENCH_ROOT || path.resolve(import.meta.dirname, "..");
-  const snapshotPath = option(options, "--price-snapshot", process.env.ROLEBENCH_PRICE_SNAPSHOT || path.join(root, "data", "model-price-snapshot.json"));
+  const provider = option(options, "--provider", "");
+  if (!provider) throw new Error("missing --provider");
+  const snapshotPath = option(options, "--price-snapshot", process.env.ROLEBENCH_PRICE_SNAPSHOT || (provider ? path.join(root, "data", "model-price-snapshots", `${provider}.json`) : null));
   const priceSnapshot = snapshotPath && fs.existsSync(snapshotPath)
     ? JSON.parse(fs.readFileSync(snapshotPath, "utf8"))
     : null;
@@ -50,6 +52,7 @@ try {
     args: commandArgs,
     cwd: option(options, "--project", process.cwd()),
     role: required(options, "--role"),
+    provider,
     model: required(options, "--model"),
     startArgs: [
       "--title", required(options, "--title"),
@@ -67,7 +70,6 @@ try {
       "--repo-language", option(options, "--repo-language", ""),
       "--tool-profile", option(options, "--tool-profile", ""),
       "--context-size-bucket", option(options, "--context-size-bucket", ""),
-      "--provider", option(options, "--provider", ""),
       "--deployment", option(options, "--deployment", "")
     ],
     usageFile: option(options, "--usage-file", null),

@@ -2,6 +2,7 @@
   "id": "implementation-001",
   "title": "Implement refund retry",
   "role": "implementer",
+  "provider": "aihubmix",
   "type": "implementation",
   "task_family": "implementation",
   "project": ".",

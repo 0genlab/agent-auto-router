@@ -16,7 +16,8 @@ const root = process.env.ROLEBENCH_ROOT || path.resolve(import.meta.dirname, "..
 const codexHome = process.env.CODEX_HOME || path.join(process.env.HOME || "", ".codex");
 const sessionsDir = option(args, "--sessions-dir", path.join(codexHome, "sessions"));
 const outputRoot = path.join(root, "data", "role-runs");
-const snapshotPath = option(args, "--price-snapshot", process.env.ROLEBENCH_PRICE_SNAPSHOT || path.join(root, "data", "model-price-snapshot.json"));
+const snapshotPath = option(args, "--price-snapshot", process.env.ROLEBENCH_PRICE_SNAPSHOT || null);
+const snapshotsDir = option(args, "--price-snapshots-dir", path.join(root, "data", "model-price-snapshots"));
 const sinceValue = option(args, "--since", null);
 const since = sinceValue ? Date.parse(sinceValue) : null;
 
@@ -35,8 +36,16 @@ try {
   const priceSnapshot = snapshotPath && fs.existsSync(snapshotPath)
     ? JSON.parse(fs.readFileSync(snapshotPath, "utf8"))
     : null;
+  const priceSnapshots = fs.existsSync(snapshotsDir)
+    ? Object.fromEntries(fs.readdirSync(snapshotsDir)
+        .filter((file) => file.endsWith(".json"))
+        .map((file) => {
+          const snapshot = JSON.parse(fs.readFileSync(path.join(snapshotsDir, file), "utf8"));
+          return [snapshot.provider || path.basename(file, ".json"), snapshot];
+        }))
+    : {};
   const store = createRoleRunStore(outputRoot);
-  const ingested = ingestSessionFiles({ files: sessionFiles(sessionsDir), store, priceSnapshot, since: Number.isFinite(since) ? since : null, refresh: args.includes("--refresh") });
+  const ingested = ingestSessionFiles({ files: sessionFiles(sessionsDir), store, priceSnapshot, priceSnapshots, since: Number.isFinite(since) ? since : null, refresh: args.includes("--refresh") });
   console.log(JSON.stringify({ sessions_dir: sessionsDir, ingested: ingested.length, runs: ingested.map((item) => item.run_id) }, null, 2));
 } catch (error) {
   console.error(error.message);

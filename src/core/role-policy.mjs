@@ -35,12 +35,12 @@ export function joinEvaluations(events) {
   const evaluations = new Map();
   for (const event of events) {
     if (event.event !== "evaluation_finished") continue;
-    evaluations.set(`${event.run_id}:${event.role}:${event.model}`, event);
+    evaluations.set(`${event.run_id}:${event.provider || "unknown"}:${event.role}:${event.model}`, event);
   }
   return events
     .filter((event) => event.event === "agent_finished")
     .map((event) => {
-      const evaluation = evaluations.get(`${event.run_id}:${event.role}:${event.model}`);
+      const evaluation = evaluations.get(`${event.run_id}:${event.provider || "unknown"}:${event.role}:${event.model}`);
       return evaluation ? { ...event, quality_score: evaluation.quality_score } : event;
     });
 }
@@ -107,14 +107,21 @@ function comparison(candidate, baseline, gate) {
   };
 }
 
-export function recommendRoles(policy, events) {
+export function recommendRoles(policy, events, { provider = null } = {}) {
   const results = joinEvaluations(events);
   const candidateGate = policy.candidate_gate;
   const autoGate = policy.auto_promote_gate;
-  return Object.entries(policy.roles).map(([role, config]) => {
+  const providerPolicy = provider ? policy.providers?.[provider] : null;
+  const roles = providerPolicy?.roles || policy.roles;
+  if (!roles) throw new Error(provider ? `provider policy not found: ${provider}` : "role policy not found");
+  const providerResults = provider
+    ? results.filter((event) => event.provider === provider)
+    : results;
+  return Object.entries(roles).map(([role, config]) => {
     const candidates = config.candidates.map((model) => {
-      const summary = metrics(results.filter((event) => event.role === role && event.model === model));
+      const summary = metrics(providerResults.filter((event) => event.role === role && event.model === model));
       return {
+        provider,
         model,
         eligible: passesCandidateGate(summary, candidateGate),
         metrics: summary
@@ -132,12 +139,18 @@ export function recommendRoles(policy, events) {
     const autoPromotable = policy.auto_promote_roles.includes(role)
       && recommended
       && recommended.model !== config.default_model
+      && baseline
+      && baseline.samples >= autoGate.min_samples_per_model
+      && baseline.distinct_tasks >= autoGate.min_distinct_tasks
+      && baseline.success_rate >= autoGate.min_success_rate
+      && baseline.quality_avg >= autoGate.min_quality_score
       && recommended.metrics.samples >= autoGate.min_samples_per_model
       && recommended.metrics.distinct_tasks >= autoGate.min_distinct_tasks
       && recommended.metrics.success_rate >= autoGate.min_success_rate
       && recommended.metrics.quality_avg >= autoGate.min_quality_score
       && comparisonResult?.eligible === true;
     return {
+      provider,
       role,
       default_model: config.default_model,
       recommended_model: recommended?.model || config.default_model,
@@ -148,4 +161,12 @@ export function recommendRoles(policy, events) {
       candidates
     };
   });
+}
+
+export function recommendProviders(policy, events) {
+  if (!policy.providers) return [{ provider: null, roles: recommendRoles(policy, events) }];
+  return Object.keys(policy.providers).map((provider) => ({
+    provider,
+    roles: recommendRoles(policy, events, { provider })
+  }));
 }

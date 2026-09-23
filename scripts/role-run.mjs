@@ -9,7 +9,7 @@ const [command, ...args] = process.argv.slice(2);
 try {
   if (command === "start") console.log(cli.start(args));
   else if (command === "record") cli.record(args);
-  else if (command === "recommend") console.log(JSON.stringify(cli.recommend(), null, 2));
+  else if (command === "recommend") console.log(JSON.stringify(cli.recommend(args), null, 2));
   else throw new Error("usage: role-run.mjs <start|record|recommend> [options]");
 } catch (error) {
   console.error(error.message);

@@ -4,6 +4,10 @@ data/role-runs/*
 data/experiments/*
 !data/experiments/.gitkeep
 data/model-price-snapshot.json
+data/model-price-snapshots/*
+!data/model-price-snapshots/.gitkeep
+data/model-catalogs/*
+!data/model-catalogs/.gitkeep
 harness/
 .DS_Store
 node_modules/

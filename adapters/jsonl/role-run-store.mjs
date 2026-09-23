@@ -19,7 +19,7 @@ export function createRoleRunStore(runsRoot) {
       if (!fs.existsSync(file)) throw new Error(`run not found: ${runId}`);
       append(file, event);
     },
-    readEvents() {
+    readEvents({ provider = undefined, role = undefined, model = undefined } = {}) {
       if (!fs.existsSync(runsRoot)) return [];
       return fs.readdirSync(runsRoot).flatMap((runId) => {
         const file = eventsPath(runId);
@@ -28,7 +28,9 @@ export function createRoleRunStore(runsRoot) {
           .split("\n")
           .filter(Boolean)
           .map((line) => JSON.parse(line));
-      });
+      }).filter((event) => (provider === undefined || event.provider === provider)
+        && (role === undefined || event.role === role)
+        && (model === undefined || event.model === model));
     }
   };
 }

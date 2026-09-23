@@ -7,11 +7,13 @@ import { spawnSync } from "node:child_process";
 import { recommendRoles } from "../src/core/role-policy.mjs";
 import { assertAdapter, createTaskProfile } from "../src/core/contracts.mjs";
 import { createAihubmixModelCatalog } from "../adapters/aihubmix/model-catalog.mjs";
+import { createCcsubModelCatalog } from "../adapters/ccsub/model-catalog.mjs";
+import { createOpenRouterModelCatalog } from "../adapters/openrouter/model-catalog.mjs";
 import { runRecordedCommand } from "../adapters/codex/command-runner.mjs";
 import { createObjectiveEvaluator } from "../adapters/command/objective-evaluator.mjs";
 import { calculateQualityScore } from "../src/core/quality-score.mjs";
 import { calculateCostUsd, normalizeUsage } from "../src/core/usage-cost.mjs";
-import { createPriceSnapshot, findModelPrice, normalizeModelPrice } from "../src/core/model-pricing.mjs";
+import { createPriceSnapshot, findModelPrice, normalizeModelPrice, normalizeOpenRouterPrice } from "../src/core/model-pricing.mjs";
 import { parseSessionFile, ingestSessionFiles } from "../adapters/codex/session-ingest.mjs";
 import { createRoleRunStore } from "../adapters/jsonl/role-run-store.mjs";
 
@@ -35,18 +37,19 @@ test("records a role run and keeps recommendations in shadow mode", () => {
   fs.copyFileSync(path.join(repoRoot, "configs", "role-policy.json"), path.join(root, "configs", "role-policy.json"));
 
   const runId = run(root, ["start", "--title", "test task", "--type", "implementation"]);
-  run(root, ["record", "--run-id", runId, "--role", "implementer", "--model", "deepseek-v4.1-flash", "--status", "success", "--quality-score", "4", "--tests-run", "2", "--tests-passed", "2"]);
-  const recommendation = JSON.parse(run(root, ["recommend"]));
+  run(root, ["record", "--run-id", runId, "--role", "implementer", "--provider", "aihubmix", "--model", "deepseek-v4.1-flash", "--status", "success", "--quality-score", "4", "--tests-run", "2", "--tests-passed", "2"]);
+  const recommendation = JSON.parse(run(root, ["recommend", "--provider", "aihubmix"]));
 
   assert.equal(recommendation.mode, "shadow");
   assert.equal(recommendation.roles.find((role) => role.role === "implementer").recommended_model, "deepseek-v4.1-flash");
 });
 
-function finishedEvent({ role, model, taskId, quality, cost, latency = 100, status = "success", regression = false }) {
+function finishedEvent({ role, model, taskId, quality, cost, provider = "aihubmix", latency = 100, status = "success", regression = false }) {
   return {
     event: "agent_finished",
     run_id: `${role}-${model}-${taskId}`,
     role,
+    provider,
     model,
     task_id: taskId,
     status,
@@ -73,7 +76,7 @@ test("requires the distinct-task candidate gate", () => {
     latency: 100 + index
   }));
 
-  const role = recommendRoles(policy, events).find((item) => item.role === "implementer");
+  const role = recommendRoles(policy, events, { provider: "aihubmix" }).find((item) => item.role === "implementer");
   const candidate = role.candidates.find((item) => item.model === "deepseek-v4.1-flash");
   assert.equal(candidate.eligible, false);
   assert.equal(role.eligible_for_candidate_pool, false);
@@ -102,10 +105,66 @@ test("auto-promotes only an objective, cheaper implementer candidate", () => {
     }));
   }
 
-  const role = recommendRoles(policy, events).find((item) => item.role === "implementer");
+  const role = recommendRoles(policy, events, { provider: "aihubmix" }).find((item) => item.role === "implementer");
   assert.equal(role.recommended_model, "deepseek-v4-pro");
   assert.equal(role.eligible_for_auto_promote, true);
   assert.ok(Math.abs(role.comparison.cost_saving - 0.3) < 1e-9);
+});
+
+test("does not auto-promote against an under-sampled baseline", () => {
+  const policy = loadPolicy();
+  const events = [finishedEvent({
+    role: "implementer",
+    model: "deepseek-v4.1-flash",
+    taskId: "baseline-task",
+    quality: 4.5,
+    cost: 1
+  })];
+  for (let index = 0; index < 30; index += 1) {
+    events.push(finishedEvent({
+      role: "implementer",
+      model: "deepseek-v4-pro",
+      taskId: `candidate-task-${index % 5}`,
+      quality: 4.5,
+      cost: 0.5,
+      latency: 100
+    }));
+  }
+  const role = recommendRoles(policy, events, { provider: "aihubmix" }).find((item) => item.role === "implementer");
+  assert.equal(role.recommended_model, "deepseek-v4-pro");
+  assert.equal(role.eligible_for_auto_promote, false);
+});
+
+test("isolates statistics and promotion gates by provider", () => {
+  const policy = loadPolicy();
+  const events = [];
+  for (let index = 0; index < 10; index += 1) {
+    events.push(finishedEvent({
+      provider: "aihubmix",
+      role: "planner",
+      model: "gpt-5.6-sol",
+      taskId: `aihubmix-task-${index}`,
+      quality: 4.5,
+      cost: 1
+    }));
+  }
+  for (let index = 0; index < 2; index += 1) {
+    events.push(finishedEvent({
+      provider: "ccsub",
+      role: "planner",
+      model: "gpt-5.6-sol",
+      taskId: `ccsub-task-${index}`,
+      quality: 1,
+      cost: 0.1,
+      status: "failed"
+    }));
+  }
+  const aihubmix = recommendRoles(policy, events, { provider: "aihubmix" }).find((item) => item.role === "planner");
+  const ccsub = recommendRoles(policy, events, { provider: "ccsub" }).find((item) => item.role === "planner");
+  assert.equal(aihubmix.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.samples, 10);
+  assert.equal(ccsub.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.samples, 2);
+  assert.equal(aihubmix.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.success_rate, 1);
+  assert.equal(ccsub.candidates.find((item) => item.model === "gpt-5.6-sol").metrics.success_rate, 0);
 });
 
 test("returns a Pareto frontier and validates adapter contracts", () => {
@@ -115,7 +174,7 @@ test("returns a Pareto frontier and validates adapter contracts", () => {
     events.push(finishedEvent({ role: "explorer", model: "deepseek-v4.1-flash", taskId: `task-${index}`, quality: 4.1, cost: 0.5 }));
     events.push(finishedEvent({ role: "explorer", model: "deepseek-v4-pro", taskId: `task-${index}`, quality: 4.5, cost: 1 }));
   }
-  const role = recommendRoles(policy, events).find((item) => item.role === "explorer");
+  const role = recommendRoles(policy, events, { provider: "aihubmix" }).find((item) => item.role === "explorer");
   assert.deepEqual(role.pareto_frontier.sort(), ["deepseek-v4.1-flash", "deepseek-v4-pro"].sort());
   assert.deepEqual(createTaskProfile({ task_family: "debug", repo_language: "go" }), {
     task_family: "debug",
@@ -133,11 +192,36 @@ test("loads the AIHubMix LLM catalog through an adapter", async () => {
     endpoint: "https://catalog.example/models",
     fetchImpl: async (url) => {
       requestedUrl = url;
-      return { ok: true, async json() { return { data: [{ model_id: "test-model" }] }; } };
+      return { ok: true, async json() { return { data: [{ id: "test-model" }] }; } };
     }
   });
-  assert.deepEqual(await catalog.listModels(), [{ model_id: "test-model" }]);
-  assert.equal(requestedUrl, "https://catalog.example/models?type=llm");
+  assert.deepEqual(await catalog.listModels(), [{ id: "test-model", model_id: "test-model", model_name: "test-model", provider: "aihubmix" }]);
+  assert.equal(requestedUrl, "https://catalog.example/models");
+});
+
+test("loads the authenticated CCSub catalog through an adapter", async () => {
+  let authorization = null;
+  const catalog = createCcsubModelCatalog({
+    endpoint: "https://ccsub.example/v1/models",
+    apiKey: "test-key",
+    fetchImpl: async (_url, options) => {
+      authorization = options.headers.Authorization;
+      return { ok: true, async json() { return { data: [{ id: "gpt-5.6-sol" }] }; } };
+    }
+  });
+  const models = await catalog.listModels();
+  assert.equal(models[0].provider, "ccsub");
+  assert.equal(authorization, "Bearer test-key");
+});
+
+test("loads the OpenRouter catalog with provider-qualified model IDs", async () => {
+  const catalog = createOpenRouterModelCatalog({
+    apiKey: "test-key",
+    fetchImpl: async () => ({ ok: true, async json() { return { data: [{ id: "deepseek/deepseek-v4.1-flash" }] }; } })
+  });
+  const models = await catalog.listModels();
+  assert.equal(models[0].provider, "openrouter");
+  assert.equal(models[0].model_id, "deepseek/deepseek-v4.1-flash");
 });
 
 test("records the exit status and duration of a Codex-compatible command", async () => {
@@ -152,6 +236,7 @@ test("records the exit status and duration of a Codex-compatible command", async
     args: ["-e", "process.exit(0)"],
     cwd: root,
     role: "implementer",
+    provider: "aihubmix",
     model: "deepseek-v4.1-flash",
     startArgs: ["--title", "recorded command", "--type", "implementation"]
   });
@@ -232,9 +317,23 @@ test("builds a model price snapshot with per-million-token prices", () => {
     pricing: { input: 0.5, output: 2 },
     retire_stage: "active"
   });
-  const snapshot = createPriceSnapshot([model], { source: "test" });
-  assert.equal(findModelPrice(snapshot, "test-model").input_price_per_million, 0.5);
+  const snapshot = createPriceSnapshot([model], { source: "test", provider: "aihubmix" });
+  assert.equal(findModelPrice(snapshot, "test-model", "aihubmix").input_price_per_million, 0.5);
+  assert.equal(findModelPrice(snapshot, "test-model", "ccsub"), null);
   assert.equal(snapshot.pricing_unit, "per_million_tokens");
+});
+
+test("normalizes OpenRouter per-token prices without crossing providers", () => {
+  const model = normalizeOpenRouterPrice({
+    id: "deepseek/deepseek-v4.1-flash",
+    name: "DeepSeek V4.1 Flash",
+    pricing: { prompt: "0.0000003", completion: "0.0000012" }
+  });
+  const snapshot = createPriceSnapshot([model], { provider: "openrouter", source: "test" });
+  assert.equal(model.input_price_per_million, 0.3);
+  assert.equal(model.output_price_per_million, 1.2);
+  assert.equal(findModelPrice(snapshot, model.model_id, "openrouter").output_price_per_million, 1.2);
+  assert.equal(findModelPrice(snapshot, model.model_id, "aihubmix"), null);
 });
 
 test("runs a multi-model role experiment and writes a comparison report", () => {
@@ -248,6 +347,7 @@ test("runs a multi-model role experiment and writes a comparison report", () => 
     id: "smoke-001",
     title: "Smoke experiment",
     role: "implementer",
+    provider: "aihubmix",
     type: "implementation",
     task_family: "implementation",
     project: root,
@@ -279,8 +379,8 @@ test("summarizes an experiment conservatively when evidence is insufficient", ()
     role: "implementer",
     task: { id: "smoke-001" },
     runs: [
-      { model: "cheap-model", status: "success", evaluation_status: "success", quality_score: 5, quality_confidence: 1, metrics: { cost_avg_usd: 0.1 } },
-      { model: "strong-model", status: "success", evaluation_status: "success", quality_score: 4.5, quality_confidence: 1, metrics: { cost_avg_usd: 1 } }
+      { provider: "aihubmix", model: "cheap-model", status: "success", evaluation_status: "success", quality_score: 5, quality_confidence: 1, metrics: { cost_avg_usd: 0.1 } },
+      { provider: "aihubmix", model: "strong-model", status: "success", evaluation_status: "success", quality_score: 4.5, quality_confidence: 1, metrics: { cost_avg_usd: 1 } }
     ]
   }));
   const result = spawnSync(process.execPath, [path.join(repoRoot, "scripts", "summarize-experiment.mjs"), "--report", reportPath], {
@@ -290,8 +390,8 @@ test("summarizes an experiment conservatively when evidence is insufficient", ()
   });
   assert.equal(result.status, 0, result.stderr);
   const summary = JSON.parse(result.stdout);
-  assert.equal(summary.recommendation_status, "insufficient_evidence");
-  assert.equal(summary.recommended_model, null);
+  assert.equal(summary.providers.aihubmix.recommendation_status, "insufficient_evidence");
+  assert.equal(summary.providers.aihubmix.recommended_model, null);
 });
 
 test("aggregates multiple experiment reports by distinct task", () => {
@@ -307,6 +407,7 @@ test("aggregates multiple experiment reports by distinct task", () => {
       runs: [
         {
           task_id: `task-${taskIndex}`,
+          provider: "aihubmix",
           model: "cheap-model",
           status: "success",
           evaluation_status: "success",
@@ -325,8 +426,61 @@ test("aggregates multiple experiment reports by distinct task", () => {
   assert.equal(result.status, 0, result.stderr);
   const summary = JSON.parse(result.stdout);
   assert.deepEqual(summary.tasks, ["task-0", "task-1", "task-2"]);
-  assert.equal(summary.models[0].metrics.distinct_tasks, 3);
-  assert.equal(summary.recommendation_status, "insufficient_evidence");
+  assert.equal(summary.providers.aihubmix.models[0].metrics.distinct_tasks, 3);
+  assert.equal(summary.providers.aihubmix.recommendation_status, "insufficient_evidence");
+});
+
+test("never promotes reports from an unregistered provider", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "0genlab-unregistered-provider-"));
+  fs.mkdirSync(path.join(root, "configs"), { recursive: true });
+  fs.copyFileSync(path.join(repoRoot, "configs", "role-policy.json"), path.join(root, "configs", "role-policy.json"));
+  const reportPath = path.join(root, "report.json");
+  fs.writeFileSync(reportPath, JSON.stringify({
+    experiment_id: "provider-typo",
+    role: "implementer",
+    runs: Array.from({ length: 10 }, (_, index) => ({
+      task_id: `task-${index}`,
+      provider: "openruter",
+      model: "cheap-model",
+      status: "success",
+      evaluation_status: "success",
+      quality_score: 5,
+      metrics: { cost_avg_usd: 0.01 }
+    }))
+  }));
+  const result = spawnSync(process.execPath, [path.join(repoRoot, "scripts", "summarize-experiment.mjs"), "--report", reportPath], {
+    cwd: repoRoot,
+    env: { ...process.env, ROLEBENCH_ROOT: root },
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 0, result.stderr);
+  const provider = JSON.parse(result.stdout).providers.openruter;
+  assert.equal(provider.registered, false);
+  assert.equal(provider.promotion_eligible, false);
+  assert.equal(provider.recommendation_status, "unregistered_provider");
+  assert.equal(provider.recommended_model, null);
+});
+
+test("rejects a catalog snapshot with mismatched provider identity", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "0genlab-catalog-provider-"));
+  fs.mkdirSync(path.join(root, "configs"), { recursive: true });
+  fs.mkdirSync(path.join(root, "data", "model-catalogs"), { recursive: true });
+  const policy = loadPolicy();
+  policy.providers = { aihubmix: policy.providers.aihubmix };
+  fs.writeFileSync(path.join(root, "configs", "role-policy.json"), JSON.stringify(policy));
+  const models = [...new Set(Object.values(policy.providers.aihubmix.roles).flatMap((role) => role.candidates))]
+    .map((model_id) => ({ model_id, provider: "ccsub" }));
+  fs.writeFileSync(path.join(root, "data", "model-catalogs", "aihubmix.json"), JSON.stringify({ provider: "ccsub", models }));
+  const result = spawnSync(process.execPath, [path.join(repoRoot, "scripts", "validate-provider-models.mjs")], {
+    cwd: repoRoot,
+    env: { ...process.env, ROLEBENCH_ROOT: root },
+    encoding: "utf8"
+  });
+  assert.equal(result.status, 1, result.stderr);
+  const validation = JSON.parse(result.stdout);
+  assert.equal(validation.valid, false);
+  assert.equal(validation.providers[0].catalog_provider_valid, false);
+  assert.equal(validation.providers[0].model_providers_valid, false);
 });
 
 test("ingests Codex session metadata without copying conversation content", () => {
@@ -349,7 +503,7 @@ test("ingests Codex session metadata without copying conversation content", () =
   const ingested = ingestSessionFiles({
     files: [sessionPath],
     store,
-    priceSnapshot: createPriceSnapshot([{ model_id: "gpt-5.6-sol", pricing: { input: 1, output: 2 } }])
+    priceSnapshot: createPriceSnapshot([{ model_id: "gpt-5.6-sol", pricing: { input: 1, output: 2 } }], { provider: "aihubmix" })
   });
   assert.equal(ingested.length, 1);
   const events = store.readEvents();
@@ -364,7 +518,7 @@ test("keeps missing session usage and cost as null", () => {
   const sessionPath = path.join(root, "session.jsonl");
   fs.writeFileSync(sessionPath, `${JSON.stringify({ timestamp: "2026-09-22T12:00:00.000Z", type: "session_meta", payload: { session_id: "session-no-usage", cwd: root, model_provider: "aihubmix" } })}\n`);
   const store = createRoleRunStore(path.join(root, "runs"));
-  ingestSessionFiles({ files: [sessionPath], store, priceSnapshot: createPriceSnapshot([{ model_id: "unknown", pricing: { input: 1, output: 1 } }]) });
+  ingestSessionFiles({ files: [sessionPath], store, priceSnapshot: createPriceSnapshot([{ model_id: "unknown", pricing: { input: 1, output: 1 } }], { provider: "aihubmix" }) });
   const finished = store.readEvents().find((event) => event.event === "agent_finished");
   assert.equal(finished.input_tokens, null);
   assert.equal(finished.output_tokens, null);

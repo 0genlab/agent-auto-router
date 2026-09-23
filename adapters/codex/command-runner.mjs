@@ -3,8 +3,9 @@ import fs from "node:fs";
 import { calculateCostUsd, normalizeUsage } from "../../src/core/usage-cost.mjs";
 import { findModelPrice } from "../../src/core/model-pricing.mjs";
 
-export function runRecordedCommand({ cli, command, args = [], cwd, role, model, startArgs = [], recordArgs = [], usageFile = null, priceSnapshot = null, inputPricePerMillion = null, outputPricePerMillion = null }) {
-  const modelPrice = findModelPrice(priceSnapshot, model);
+export function runRecordedCommand({ cli, command, args = [], cwd, role, provider, model, startArgs = [], recordArgs = [], usageFile = null, priceSnapshot = null, inputPricePerMillion = null, outputPricePerMillion = null }) {
+  if (!provider) throw new Error("provider is required");
+  const modelPrice = findModelPrice(priceSnapshot, model, provider);
   const resolvedInputPrice = inputPricePerMillion ?? modelPrice?.input_price_per_million;
   const resolvedOutputPrice = outputPricePerMillion ?? modelPrice?.output_price_per_million;
   const runId = cli.start(startArgs);
@@ -28,6 +29,7 @@ export function runRecordedCommand({ cli, command, args = [], cwd, role, model, 
         cli.record([
           "--run-id", runId,
           "--role", role,
+          "--provider", provider,
           "--model", model,
           "--status", "failed",
           "--latency-ms", String(Date.now() - startedAt),
@@ -46,6 +48,7 @@ export function runRecordedCommand({ cli, command, args = [], cwd, role, model, 
       cli.record([
         "--run-id", runId,
         "--role", role,
+        "--provider", provider,
         "--model", model,
         "--status", status,
         "--latency-ms", String(Date.now() - startedAt),

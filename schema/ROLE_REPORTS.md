@@ -1,4 +1,4 @@
-# Role experiment report schema v1
+# Role experiment report schema v2
 
 Use `scripts/summarize-experiment.mjs` after a batch run:
 
@@ -15,6 +15,11 @@ The summary distinguishes three states:
 
 The report is intentionally conservative: a low-cost model with insufficient
 quality evidence is not recommended.
+
+Summaries are partitioned under `providers`. Reports from different providers
+may be read together, but their samples, metrics, recommendations, and
+promotion eligibility are never merged. Reports from different roles are
+rejected rather than silently combined.
 
 Multiple task reports can be aggregated before judging the candidate gate:
 

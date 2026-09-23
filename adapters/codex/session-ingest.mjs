@@ -66,7 +66,7 @@ export function parseSessionFile(file) {
     session_id: meta.session_id || meta.id || path.basename(file, ".jsonl"),
     cwd: latestContext.cwd || meta.cwd || null,
     model: latestContext.model || meta.model || null,
-    provider: latestContext.model_provider || meta.model_provider || null,
+    provider: latestContext.model_provider || meta.model_provider || "unknown",
     role: roleFor(meta.source),
     source: meta.source || null,
     started_at: timestamps.length ? new Date(Math.min(...timestamps)).toISOString() : null,
@@ -79,13 +79,13 @@ export function parseSessionFile(file) {
   };
 }
 
-export function ingestSessionFiles({ files, store, priceSnapshot = null, since = null, refresh = false } = {}) {
+export function ingestSessionFiles({ files, store, priceSnapshot = null, priceSnapshots = null, since = null, refresh = false } = {}) {
   const ingested = [];
   const seenRunIds = new Set();
   for (const file of files || []) {
-    const session = parseSessionFile(file);
     const modifiedAt = fs.statSync(file).mtimeMs;
     if (since !== null && modifiedAt < since) continue;
+    const session = parseSessionFile(file);
     const runId = `codex-${session.session_id}`;
     if (seenRunIds.has(runId)) continue;
     seenRunIds.add(runId);
@@ -94,7 +94,8 @@ export function ingestSessionFiles({ files, store, priceSnapshot = null, since =
       if (!refresh) continue;
       fs.rmSync(runDir, { recursive: true, force: true });
     }
-    const price = findModelPrice(priceSnapshot, session.model);
+    const providerSnapshot = priceSnapshots?.[session.provider] || priceSnapshot;
+    const price = findModelPrice(providerSnapshot, session.model, session.provider);
     const cost = calculateCostUsd(session.usage, {
       inputPricePerMillion: price?.input_price_per_million,
       outputPricePerMillion: price?.output_price_per_million
@@ -120,6 +121,7 @@ export function ingestSessionFiles({ files, store, priceSnapshot = null, since =
       event: "run_started",
       timestamp: session.started_at || new Date().toISOString(),
       role: "main",
+      provider: session.provider,
       model: null
     });
     store.appendEvent(runId, {

@@ -1,7 +1,7 @@
 import path from "node:path";
 import process from "node:process";
 import { createRoleRunStore } from "../jsonl/role-run-store.mjs";
-import { recommendRoles } from "../../src/core/role-policy.mjs";
+import { recommendProviders, recommendRoles } from "../../src/core/role-policy.mjs";
 import { createTaskProfile } from "../../src/core/contracts.mjs";
 import fs from "node:fs";
 
@@ -61,6 +61,7 @@ export function createCodexRoleRunCli({ root, now = () => new Date().toISOString
     const runId = required(args, "--run-id");
     const role = required(args, "--role");
     const model = required(args, "--model");
+    const provider = required(args, "--provider");
     store.appendEvent(runId, {
       schema_version: 1,
       run_id: runId,
@@ -73,7 +74,7 @@ export function createCodexRoleRunCli({ root, now = () => new Date().toISOString
       context_size_bucket: option(args, "--context-size-bucket", null),
       role,
       model,
-      provider: option(args, "--provider", null),
+      provider,
       deployment: option(args, "--deployment", null),
       status: option(args, "--status", "unknown"),
       quality_score: numberOrNull(option(args, "--quality-score", "")),
@@ -97,9 +98,24 @@ export function createCodexRoleRunCli({ root, now = () => new Date().toISOString
   return {
     start,
     record,
-    recommend() {
+    recommend(args = []) {
       const policy = JSON.parse(fs.readFileSync(policyPath, "utf8"));
-      return { schema_version: 1, mode: policy.mode, thresholds: policy.candidate_gate, roles: recommendRoles(policy, store.readEvents()) };
+      const provider = option(args, "--provider", null);
+      const events = store.readEvents();
+      return provider
+        ? {
+            schema_version: 2,
+            mode: policy.mode,
+            provider,
+            thresholds: policy.candidate_gate,
+            roles: recommendRoles(policy, events, { provider })
+          }
+        : {
+            schema_version: 2,
+            mode: policy.mode,
+            thresholds: policy.candidate_gate,
+            providers: recommendProviders(policy, events)
+          };
     }
   };
 }

@@ -54,14 +54,14 @@ function buildCommand(task, model) {
   };
 }
 
-function buildRecordArgs(task, model) {
+function buildRecordArgs(task, model, provider) {
   return [
     "--task-id", task.id,
     "--task-family", task.task_family || task.type || "unknown",
     "--repo-language", task.repo_language || "",
     "--tool-profile", task.tool_profile || "",
     "--context-size-bucket", task.context_size_bucket || "",
-    "--provider", task.provider || "aihubmix",
+    "--provider", provider,
     "--deployment", model
   ];
 }
@@ -109,6 +109,7 @@ async function evaluateRun({ store, runId, task, project }) {
     run_id: runId,
     role: latest.role,
     model: latest.model,
+    provider: latest.provider,
     timestamp: new Date().toISOString(),
     ...evaluation
   });
@@ -120,15 +121,17 @@ async function main() {
   const root = process.env.ROLEBENCH_ROOT || path.resolve(import.meta.dirname, "..");
   const task = readJson(required(args, "--task"));
   const role = option(args, "--role", task.role);
+  const provider = option(args, "--provider", task.provider);
   const models = (option(args, "--models", task.models?.join(",")) || "").split(",").map((model) => model.trim()).filter(Boolean);
   if (!role) throw new Error("missing --role or task.role");
+  if (!provider) throw new Error("missing --provider or task.provider");
   if (!models.length) throw new Error("missing --models or task.models");
   if (!task.id || !task.prompt || !task.command) throw new Error("task requires id, prompt, and command");
   const project = option(args, "--project", task.project || process.cwd());
   const runsRoot = path.join(root, "data", "role-runs");
   const store = createRoleRunStore(runsRoot);
   const cli = createCodexRoleRunCli({ root });
-  const snapshotPath = option(args, "--price-snapshot", process.env.ROLEBENCH_PRICE_SNAPSHOT || path.join(root, "data", "model-price-snapshot.json"));
+  const snapshotPath = option(args, "--price-snapshot", process.env.ROLEBENCH_PRICE_SNAPSHOT || path.join(root, "data", "model-price-snapshots", `${provider}.json`));
   const priceSnapshot = snapshotPath && fs.existsSync(snapshotPath) ? readJson(snapshotPath) : null;
   const reportPath = option(args, "--report", path.join(root, "data", "experiments", `role-${role}-${task.id}-${Date.now()}.json`));
   const runs = [];
@@ -141,6 +144,7 @@ async function main() {
       args: command.args,
       cwd: project,
       role,
+      provider,
       model,
       startArgs: [
         "--title", task.title || task.id,
@@ -152,7 +156,7 @@ async function main() {
         "--tool-profile", task.tool_profile || "",
         "--context-size-bucket", task.context_size_bucket || ""
       ],
-      recordArgs: buildRecordArgs(task, model),
+      recordArgs: buildRecordArgs(task, model, provider),
       usageFile: task.usage_file || null,
       priceSnapshot
     });
@@ -162,19 +166,21 @@ async function main() {
     runs.push({
       run_id: result.runId,
       task_id: task.id,
+      provider,
       model,
       status: result.status,
       evaluation_status: evaluation.evaluation_status,
       quality_score: evaluation.quality_score,
       quality_confidence: evaluation.quality_confidence,
       metrics: summary,
-      pricing: findModelPrice(priceSnapshot, model)
+      pricing: findModelPrice(priceSnapshot, model, provider)
     });
   }
 
   const report = {
-    schema_version: 1,
+    schema_version: 2,
     experiment_id: `${role}-${task.id}`,
+    provider,
     role,
     task: {
       id: task.id,
