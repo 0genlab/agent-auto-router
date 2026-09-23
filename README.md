@@ -4,7 +4,122 @@ An evidence-driven routing and evaluation tool that helps agents choose the righ
 
 > In one sentence: the agent submits a task, `agent-auto-router` selects a model; the agent executes the task, and the router records evidence to improve the next decision.
 
-This is not a leaderboard or a request-only proxy. Model choices are traceable, and the default behavior is observe-and-recommend until there is enough evidence to justify a switch. Codex CLI is the first validated host; other agents can connect through adapters.
+This is not a leaderboard or a request-only proxy. Model choices are traceable, and the default behavior is observe-and-recommend until there is enough evidence to justify a switch. Codex CLI is the first validated host. Claude Code and Hermes are integrated as preview host adapters for non-interactive execution and metadata-only session ingestion.
+
+## How to use
+
+Run these commands from the `0genlab` repository. The tool supports two complementary workflows:
+
+- **Execute and record:** wrap a host command or run one host stage, then store role, provider, model, status, latency, token, and cost metadata under `data/role-runs/`.
+- **Import and recommend:** ingest metadata from existing Codex, Claude Code, or Hermes sessions, evaluate objective evidence, and generate provider-scoped model recommendations.
+
+Prerequisites are Node.js 22+, the host CLI you intend to use (`codex`, `claude`, or `hermes`), and that host's existing authentication. Hermes session ingestion also requires Python 3 with its standard `sqlite3` module. The repository has no package installation step.
+
+The host remains responsible for calling its model and using tools. `0genlab` recommends and records the provider/model identity; it does not proxy requests or replace the host CLI.
+
+| Goal | Host | Entry point |
+| --- | --- | --- |
+| Execute a task and record the command | Codex CLI or any command-line agent | `scripts/codex-run.mjs` |
+| Execute one non-interactive stage | Claude Code | `scripts/run-host-stage.mjs --host claude` |
+| Execute one non-interactive stage | Hermes | `scripts/run-host-stage.mjs --host hermes` |
+| Import historical session metadata | Codex, Claude Code, or Hermes | `scripts/ingest-*-sessions.mjs` |
+| Evaluate evidence and recommend a model | Any supported host | `scripts/evaluate-run.mjs`, `scripts/role-run.mjs recommend` |
+
+### Use with Codex or another command-line agent
+
+`codex-run.mjs` starts a role run, executes the command after `--`, and records exit status and wall time. Use it for `codex exec` or any other command-line agent; the wrapped command does not need to know about `0genlab`. For normal interactive Codex use, keep using Codex as usual and run `ingest-codex-sessions.mjs` afterward to import session metadata.
+
+```bash
+ROLEBENCH_ROOT="$PWD" node scripts/codex-run.mjs \
+  --role implementer \
+  --provider aihubmix \
+  --model deepseek-v4.1-flash \
+  --title "Implement refund retry" \
+  --type implementation \
+  --project "$PWD" \
+  -- \
+  codex exec --full-auto "Implement refund retry and run tests"
+```
+
+The wrapper records process metadata only. It does not copy the prompt, model response, tool output, or source code.
+
+### Use with Claude Code
+
+`run-host-stage.mjs` builds one explicit Claude Code request. It defaults to a redacted dry-run; add `--execute` to start the host:
+
+```bash
+ROLEBENCH_ROOT="$PWD" node scripts/run-host-stage.mjs \
+  --host claude \
+  --role implementer \
+  --provider unknown \
+  --model opus \
+  --prompt-file ./prompt.txt \
+  --execute
+```
+
+Claude Code runs as `claude --print --output-format json --model <model>`. Use `--provider unknown` only for audit-only runs. A real provider must match the provider proven by the local Claude settings or `ANTHROPIC_BASE_URL`; the adapter never infers a provider from the model name.
+
+For normal interactive Claude Code sessions, keep using `claude` and import the metadata afterward with `ingest-claude-sessions.mjs`.
+
+### Use with Hermes
+
+For Hermes, the provider and model must exist in the local supported catalog or current configuration:
+
+```bash
+ROLEBENCH_ROOT="$PWD" node scripts/run-host-stage.mjs \
+  --host hermes \
+  --role implementer \
+  --provider "$HERMES_PROVIDER" \
+  --model "$HERMES_MODEL" \
+  --prompt-file ./prompt.txt \
+  --execute
+```
+
+Hermes runs as `hermes chat --provider <provider> --model <model> --in <cwd> --query-file - --oneshot`. The prompt is sent on stdin and is never placed in argv.
+
+For normal interactive Hermes sessions, keep using `hermes` and import the metadata afterward with `ingest-hermes-sessions.mjs`.
+
+### Import existing sessions
+
+Historical sessions can be imported without rerunning the agents:
+
+```bash
+ROLEBENCH_ROOT="$PWD" node scripts/ingest-codex-sessions.mjs
+ROLEBENCH_ROOT="$PWD" node scripts/ingest-claude-sessions.mjs
+ROLEBENCH_ROOT="$PWD" node scripts/ingest-hermes-sessions.mjs
+```
+
+All three importers are metadata-only. They do not persist prompts, responses, tool arguments, or source code. Use `--since` to limit an import and `--refresh` to rebuild existing session-derived runs.
+
+### Evaluate and ask for a recommendation
+
+Use `role-run.mjs` when the host is not wrapped by `codex-run.mjs` or `run-host-stage.mjs`:
+
+```bash
+RUN_ID="$(ROLEBENCH_ROOT="$PWD" node scripts/role-run.mjs start \
+  --title "Implement refund retry" \
+  --type implementation \
+  --expected "Tests pass")"
+
+# Run the selected agent and record its result.
+ROLEBENCH_ROOT="$PWD" node scripts/role-run.mjs record \
+  --run-id "$RUN_ID" \
+  --role implementer \
+  --provider aihubmix \
+  --model deepseek-v4.1-flash \
+  --status success \
+  --tests-run 8 \
+  --tests-passed 8
+
+ROLEBENCH_ROOT="$PWD" node scripts/evaluate-run.mjs \
+  --run-id "$RUN_ID" \
+  --project "$PWD" \
+  --test-command '["npm","test"]'
+
+ROLEBENCH_ROOT="$PWD" node scripts/role-run.mjs recommend --provider aihubmix
+```
+
+Recommendations are provider-scoped and remain in `shadow` mode by default. They do not rewrite Codex, Claude Code, or Hermes configuration automatically.
 
 ## End-to-end loop
 
@@ -51,6 +166,15 @@ The current release focuses on role-based model evaluation and switching decisio
 | Direct providers | OpenAI, Anthropic, DeepSeek, and others | 🔌 Extension point | Direct connections still require their own catalog and execution adapters |
 | Persistence | JSONL | ✅ Validated | Stores structured task, role, model, quality, cost, and evidence metadata |
 | Evaluation | CLI tests, regression checks, and diff checks | ✅ Validated | Stores objective results without test command stdout/stderr |
+
+### Host adapter entry points
+
+| Host | Execution adapter | Session ingestion | Integration behavior |
+| --- | --- | --- | --- |
+| Claude Code | `adapters/claude/host.mjs` | `scripts/ingest-claude-sessions.mjs` | Builds a non-interactive `claude --print --output-format json` request; validates model and provider evidence before execution |
+| Hermes | `adapters/hermes/host.mjs` | `scripts/ingest-hermes-sessions.mjs` | Validates the provider and model against the local Hermes catalog, then builds `hermes chat --query-file - --oneshot` |
+
+Both adapters feed the same role-run store as Codex and remain additive: they do not change Codex ingestion, role policy, or the run schema.
 
 ### Role vocabulary
 
@@ -169,7 +293,7 @@ flowchart TB
 
 The router answers **which model, why it was selected, whether a switch is allowed, and how the result performed**. The host agent answers **how to call the model, use tools, and complete the task**. The policy core therefore stays independent of Codex and any single provider.
 
-## Quick start
+## Detailed workflows
 
 ### Record a role run
 
@@ -299,7 +423,18 @@ node scripts/run-host-stage.mjs \
   --host claude \
   --role implementer \
   --provider unknown \
-  --model claude-opus-5 \
+  --model opus \
+  --prompt-file ./prompt.txt
+```
+
+Use the same entry point for Hermes after substituting values from its local supported catalog:
+
+```bash
+node scripts/run-host-stage.mjs \
+  --host hermes \
+  --role implementer \
+  --provider "$HERMES_PROVIDER" \
+  --model "$HERMES_MODEL" \
   --prompt-file ./prompt.txt
 ```
 
