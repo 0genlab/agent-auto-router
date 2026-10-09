@@ -317,7 +317,8 @@ export function parseClaudeSessionFile(file, {
   provider = "unknown",
   providerVerified = false,
   auditedProvider = null,
-  auditedProviderVerified = true
+  auditedProviderVerified = true,
+  routeEvidence = null
 } = {}) {
   const uniqueUsage = new Map();
   const eventTypes = new Set();
@@ -360,6 +361,10 @@ export function parseClaudeSessionFile(file, {
       });
     }
   });
+
+  if (!sessionProviderEvidence && typeof routeEvidence === "function") {
+    sessionProviderEvidence = routeEvidence(sessionId || path.basename(file, ".jsonl")) || null;
+  }
 
   const usageEntries = [...uniqueUsage.values()];
   const usage = aggregateUsage(usageEntries.map((entry) => entry.usage));
@@ -452,7 +457,8 @@ export function ingestClaudeSessionFiles({
   priceSnapshot = null,
   priceSnapshots = null,
   since = null,
-  refresh = false
+  refresh = false,
+  routeEvidence = null
 } = {}) {
   const ingested = [];
   for (const file of files || []) {
@@ -462,7 +468,8 @@ export function ingestClaudeSessionFiles({
       provider,
       providerVerified,
       auditedProvider,
-      auditedProviderVerified
+      auditedProviderVerified,
+      routeEvidence
     });
     const groups = session.model_groups.length
       ? session.model_groups

@@ -13,6 +13,7 @@ import {
   parseClaudeSessionFile
 } from "../adapters/claude/session-ingest.mjs";
 import { createClaudeHostAdapter } from "../adapters/claude/host.mjs";
+import { readClaudeSessionRoute, recordClaudeSessionRoute } from "../adapters/claude/session-routes.mjs";
 import {
   exportHermesRows,
   ingestHermesSessions,
@@ -1872,4 +1873,67 @@ test("host stage removes a prepared temporary usage file after reading it", asyn
   });
   assert.equal(result.status, "success");
   assert.equal(fs.existsSync(usageFile), false);
+});
+
+test("Claude session route hook evidence verifies the provider and refreshes an unknown run", () => {
+  const root = tempRoot("0genlab-claude-route-");
+  const { file } = writeClaudeFixture(root);
+  const routesDir = path.join(root, "data", "claude-session-routes");
+  const store = createRoleRunStore(path.join(root, "data", "role-runs"));
+  const routeEvidence = (sessionId) => readClaudeSessionRoute(routesDir, sessionId);
+
+  const before = ingestClaudeSessionFiles({ files: [file], store, routeEvidence });
+  assert.equal(before[0].session.provider, "unknown");
+
+  const recorded = recordClaudeSessionRoute({
+    routesDir,
+    sessionId: "session-1",
+    env: { ANTHROPIC_BASE_URL: "https://ccsub.inferera.com/v1?token=SECRET_ROUTE_SENTINEL" }
+  });
+  assert.equal(recorded.created, true);
+  assert.equal(recorded.route.provider, "sub2api");
+  assert.equal(recorded.route.base_url_origin, "https://ccsub.inferera.com");
+  assert.equal(fs.readFileSync(recorded.file, "utf8").includes("SECRET_ROUTE_SENTINEL"), false);
+  assert.equal(recordClaudeSessionRoute({ routesDir, sessionId: "session-1", env: {} }).created, false);
+
+  const after = ingestClaudeSessionFiles({ files: [file], store, routeEvidence });
+  assert.equal(after.length, 1);
+  assert.equal(after[0].session.provider, "sub2api");
+  assert.equal(after[0].session.provider_verified, true);
+  assert.equal(after[0].session.provider_evidence, "session-route-hook");
+});
+
+test("Claude session route ignores unsafe ids and unmapped routes", () => {
+  const routesDir = path.join(tempRoot("0genlab-claude-route-unsafe-"), "routes");
+  assert.throws(() => recordClaudeSessionRoute({ routesDir, sessionId: "../escape", env: {} }));
+  recordClaudeSessionRoute({ routesDir, sessionId: "s2", env: { ANTHROPIC_BASE_URL: "http://ccsub.inferera.com" } });
+  assert.equal(readClaudeSessionRoute(routesDir, "s2"), null);
+  assert.equal(readClaudeSessionRoute(routesDir, "missing"), null);
+});
+
+test("Claude session hook records the route at start and ingests the transcript at end", () => {
+  const root = tempRoot("0genlab-claude-hook-");
+  const { file } = writeClaudeFixture(root);
+  const env = {
+    ...process.env,
+    ROLEBENCH_ROOT: root,
+    CLAUDE_CONFIG_DIR: path.join(root, ".claude"),
+    ANTHROPIC_BASE_URL: "https://ccsub.inferera.com"
+  };
+  const run = (payload) => spawnSync(process.execPath, [path.join(repoRoot, "scripts", "claude-session-hook.mjs")], {
+    input: JSON.stringify(payload), env, encoding: "utf8"
+  });
+
+  assert.equal(run({ hook_event_name: "SessionStart", session_id: "session-1" }).status, 0);
+  assert.equal(fs.existsSync(path.join(root, "data", "claude-session-routes", "session-1.json")), true);
+
+  assert.equal(run({ hook_event_name: "SessionEnd", session_id: "session-1", transcript_path: file }).status, 0);
+  const runs = fs.readdirSync(path.join(root, "data", "role-runs")).filter((name) => name.startsWith("claude-"));
+  assert.equal(runs.length, 1);
+  const event = JSON.parse(fs.readFileSync(path.join(root, "data", "role-runs", runs[0], "events.jsonl"), "utf8").trim().split("\n").at(-1));
+  assert.equal(event.provider, "sub2api");
+  assert.equal(event.provider_verified, true);
+
+  assert.equal(run({ hook_event_name: "SessionEnd", session_id: "session-1", transcript_path: "/nonexistent.jsonl" }).status, 0);
+  assert.equal(spawnSync(process.execPath, [path.join(repoRoot, "scripts", "claude-session-hook.mjs")], { input: "not json", env }).status, 0);
 });

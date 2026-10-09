@@ -1,6 +1,8 @@
 data/runs/_unassigned/
 data/role-runs/*
 !data/role-runs/.gitkeep
+data/claude-session-routes/
+data/claude-session-hook.log
 data/experiments/*
 !data/experiments/.gitkeep
 data/model-price-snapshot.json
