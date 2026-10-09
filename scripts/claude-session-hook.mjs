@@ -2,7 +2,8 @@
 
 // Claude Code hook entry for SessionStart and SessionEnd.
 // SessionStart records the provider route the live session uses;
-// SessionEnd records it if missing and ingests that session's transcript.
+// SessionEnd records it if missing and ingests that session's transcript
+// together with its subagent transcripts.
 // It always exits 0 so a recording failure never blocks Claude Code.
 
 import fs from "node:fs";
@@ -46,9 +47,14 @@ try {
   }
 
   if (event === "SessionEnd" && transcriptPath && fs.existsSync(transcriptPath)) {
+    const subagentsDir = path.join(transcriptPath.replace(/\.jsonl$/, ""), "subagents");
+    const subagentFiles = fs.existsSync(subagentsDir)
+      ? fs.readdirSync(subagentsDir).filter((name) => name.endsWith(".jsonl")).map((name) => path.join(subagentsDir, name))
+      : [];
     const result = spawnSync(process.execPath, [
       path.join(import.meta.dirname, "ingest-claude-sessions.mjs"),
       "--file", transcriptPath,
+      ...subagentFiles.flatMap((file) => ["--file", file]),
       "--routes-dir", routesDir
     ], { env: { ...process.env, ROLEBENCH_ROOT: root }, encoding: "utf8", timeout: 30_000 });
     if (result.status === 0) {

@@ -1924,16 +1924,59 @@ test("Claude session hook records the route at start and ingests the transcript 
     input: JSON.stringify(payload), env, encoding: "utf8"
   });
 
+  writeClaudeSubagentFixture(file, { agentId: "a1", agentType: "Plan" });
   assert.equal(run({ hook_event_name: "SessionStart", session_id: "session-1" }).status, 0);
   assert.equal(fs.existsSync(path.join(root, "data", "claude-session-routes", "session-1.json")), true);
 
   assert.equal(run({ hook_event_name: "SessionEnd", session_id: "session-1", transcript_path: file }).status, 0);
   const runs = fs.readdirSync(path.join(root, "data", "role-runs")).filter((name) => name.startsWith("claude-"));
-  assert.equal(runs.length, 1);
-  const event = JSON.parse(fs.readFileSync(path.join(root, "data", "role-runs", runs[0], "events.jsonl"), "utf8").trim().split("\n").at(-1));
-  assert.equal(event.provider, "sub2api");
-  assert.equal(event.provider_verified, true);
+  assert.equal(runs.length, 2);
+  const events = runs.map((name) => JSON.parse(fs.readFileSync(path.join(root, "data", "role-runs", name, "events.jsonl"), "utf8").trim().split("\n").at(-1)));
+  assert.deepEqual(events.map((event) => event.role).sort(), ["main", "planner"]);
+  for (const event of events) {
+    assert.equal(event.provider, "sub2api");
+    assert.equal(event.provider_verified, true);
+  }
 
   assert.equal(run({ hook_event_name: "SessionEnd", session_id: "session-1", transcript_path: "/nonexistent.jsonl" }).status, 0);
   assert.equal(spawnSync(process.execPath, [path.join(repoRoot, "scripts", "claude-session-hook.mjs")], { input: "not json", env }).status, 0);
+});
+
+function writeClaudeSubagentFixture(sessionFile, { agentId, agentType, model = "claude-fable-5" }) {
+  const dir = path.join(sessionFile.replace(/\.jsonl$/, ""), "subagents");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `agent-${agentId}.jsonl`);
+  const records = [
+    { type: "user", isSidechain: true, agentId, sessionId: "session-1", timestamp: "2026-09-23T01:00:02.000Z", message: { role: "user", content: "SECRET_PROMPT_SENTINEL" } },
+    { type: "assistant", isSidechain: true, agentId, sessionId: "session-1", timestamp: "2026-09-23T01:00:04.000Z", message: { id: `msg-${agentId}`, model, usage: { input_tokens: 10, output_tokens: 20 } } }
+  ];
+  fs.writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+  fs.writeFileSync(path.join(dir, `agent-${agentId}.meta.json`), JSON.stringify({ agentType, description: "SECRET_DESCRIPTION_SENTINEL" }));
+  return file;
+}
+
+test("Claude subagent transcripts become separate runs with a mapped role", () => {
+  const root = tempRoot("0genlab-claude-subagent-");
+  const { file } = writeClaudeFixture(root);
+  const explore = writeClaudeSubagentFixture(file, { agentId: "a1", agentType: "Explore" });
+  const general = writeClaudeSubagentFixture(file, { agentId: "a2", agentType: "general-purpose" });
+  const store = createRoleRunStore(path.join(root, "data", "role-runs"));
+
+  const ingested = ingestClaudeSessionFiles({ files: [file, explore, general], store });
+  assert.equal(ingested.length, 3);
+  assert.equal(new Set(ingested.map((item) => item.run_id)).size, 3);
+  const byAgent = Object.fromEntries(ingested.map((item) => [item.session.agent_id || "main", item]));
+  assert.equal(byAgent.main.session.role, "main");
+  assert.equal(byAgent.a1.session.role, "explorer");
+  assert.equal(byAgent.a2.session.role, "main");
+  assert.equal(byAgent.a1.model_group.usage.output_tokens, 20);
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(store.runsRoot, byAgent.a1.run_id, "manifest.json"), "utf8"));
+  assert.equal(manifest.agent_type, "Explore");
+  assert.equal(JSON.stringify(manifest).includes("SECRET_"), false);
+  const event = JSON.parse(fs.readFileSync(path.join(store.runsRoot, byAgent.a1.run_id, "events.jsonl"), "utf8").trim().split("\n").at(-1));
+  assert.equal(event.role, "explorer");
+  assert.equal(event.task_id, "session-1");
+
+  assert.equal(ingestClaudeSessionFiles({ files: [file, explore, general], store }).length, 0);
 });

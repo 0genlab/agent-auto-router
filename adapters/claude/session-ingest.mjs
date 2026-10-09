@@ -12,6 +12,11 @@ const providerByHostname = [
   { hostname: "openrouter.ai", provider: "openrouter" }
 ];
 
+const subagentRoleByType = {
+  explore: "explorer",
+  plan: "planner"
+};
+
 function stringOrNull(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -66,9 +71,10 @@ export function resolveClaudeProvider(options = {}) {
   return detectClaudeProvider(options).provider;
 }
 
-function runIdForSession(sessionId, model = null) {
+function runIdForSession(sessionId, model = null, agentId = null) {
+  const key = agentId ? [String(sessionId || ""), String(model || ""), String(agentId)] : [String(sessionId || ""), String(model || "")];
   const digest = createHash("sha256")
-    .update(JSON.stringify([String(sessionId || ""), String(model || "")]))
+    .update(JSON.stringify(key))
     .digest("hex")
     .slice(0, 32);
   return `claude-${digest}`;
@@ -270,6 +276,15 @@ function providerEvidenceFromRecord(record) {
     : null;
 }
 
+function subagentTypeFor(file) {
+  try {
+    const meta = JSON.parse(fs.readFileSync(file.replace(/\.jsonl$/, ".meta.json"), "utf8"));
+    return stringOrNull(meta?.agentType);
+  } catch {
+    return null;
+  }
+}
+
 function consumeClaudeLines(file, consume) {
   const descriptor = fs.openSync(file, "r");
   const decoder = new StringDecoder("utf8");
@@ -331,6 +346,7 @@ export function parseClaudeSessionFile(file, {
   let maxTimestamp = null;
   let timestampCount = 0;
   let sessionProviderEvidence = null;
+  let agentId = null;
 
   const malformedLineCount = consumeClaudeLines(file, (record) => {
     eventTypes.add(record.type || "unknown");
@@ -344,6 +360,7 @@ export function parseClaudeSessionFile(file, {
     cwd ||= stringOrNull(record.cwd);
     gitBranch ||= stringOrNull(record.gitBranch);
     version ||= stringOrNull(record.version);
+    if (record.isSidechain === true) agentId ||= stringOrNull(record.agentId);
     if (record.is_error === true || record.type === "error") status = "failed";
     sessionProviderEvidence ||= providerEvidenceFromRecord(record);
 
@@ -365,6 +382,9 @@ export function parseClaudeSessionFile(file, {
   if (!sessionProviderEvidence && typeof routeEvidence === "function") {
     sessionProviderEvidence = routeEvidence(sessionId || path.basename(file, ".jsonl")) || null;
   }
+
+  const agentType = agentId ? subagentTypeFor(file) : null;
+  const role = subagentRoleByType[String(agentType || "").toLowerCase()] || "main";
 
   const usageEntries = [...uniqueUsage.values()];
   const usage = aggregateUsage(usageEntries.map((entry) => entry.usage));
@@ -434,7 +454,9 @@ export function parseClaudeSessionFile(file, {
     provider: resolvedProvider,
     provider_verified: resolvedProviderVerified,
     provider_evidence: providerEvidence,
-    role: "main",
+    agent_id: agentId,
+    agent_type: agentType,
+    role,
     started_at: startedAt,
     ended_at: endedAt,
     latency_ms: timestampCount > 1 ? maxTimestamp - minTimestamp : null,
@@ -481,10 +503,10 @@ export function ingestClaudeSessionFiles({
           latency_ms: session.latency_ms
         }];
     const multipleModels = groups.length > 1;
-    const migratedRunId = migrateLegacyClaudeRun({ store, session, groups });
+    const migratedRunId = session.agent_id ? null : migrateLegacyClaudeRun({ store, session, groups });
 
     for (const group of groups) {
-      const runId = runIdForSession(session.session_id, group.model);
+      const runId = runIdForSession(session.session_id, group.model, session.agent_id);
       const runDir = path.join(store.runsRoot, runId);
       if (fs.existsSync(runDir)) {
         const migratedCurrentRun = migratedRunId === runId;
@@ -505,7 +527,7 @@ export function ingestClaudeSessionFiles({
       store.createRun({
         schema_version: 1,
         run_id: runId,
-        title: `Claude Code session ${session.session_id}${multipleModels ? ` (${group.model || "unknown"})` : ""}`,
+        title: `Claude Code ${session.agent_id ? `subagent ${session.agent_id} (${session.agent_type || "unknown"}) of session` : "session"} ${session.session_id}${multipleModels ? ` (${group.model || "unknown"})` : ""}`,
         task_type: "unknown",
         project: session.cwd,
         expected: "",
@@ -515,6 +537,7 @@ export function ingestClaudeSessionFiles({
         context_size_bucket: null,
         source: "claude-session-jsonl",
         session_id: session.session_id,
+        ...(session.agent_id ? { agent_id: session.agent_id, agent_type: session.agent_type } : {}),
         session_file: session.session_file,
         model: group.model,
         started_at: group.started_at || session.started_at
@@ -523,7 +546,7 @@ export function ingestClaudeSessionFiles({
         run_id: runId,
         event: "run_started",
         timestamp: group.started_at || session.started_at || new Date().toISOString(),
-        role: "main",
+        role: session.role,
         provider: session.provider,
         provider_verified: session.provider_verified,
         model: group.model
@@ -548,7 +571,7 @@ export function ingestClaudeSessionFiles({
         cost_usd: cost,
         regression: null,
         failure_mode: session.status === "failed" ? "session_error" : null,
-        evidence: [`claude-session:${session.session_id}${multipleModels ? `:${group.model || "unknown"}` : ""}`],
+        evidence: [`claude-session:${session.session_id}${session.agent_id ? `:agent-${session.agent_id}` : ""}${multipleModels ? `:${group.model || "unknown"}` : ""}`],
         note: "passive ingestion from Claude Code session JSONL; metadata only"
       });
       ingested.push({ run_id: runId, model: group.model, model_group: group, session });
