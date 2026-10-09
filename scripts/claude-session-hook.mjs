@@ -3,7 +3,7 @@
 // Claude Code hook entry for SessionStart and SessionEnd.
 // SessionStart records the provider route the live session uses;
 // SessionEnd records it if missing and ingests that session's transcript
-// together with its subagent transcripts.
+// together with its subagent transcripts, then evaluates their outcome signals.
 // It always exits 0 so a recording failure never blocks Claude Code.
 
 import fs from "node:fs";
@@ -60,6 +60,11 @@ try {
     if (result.status === 0) {
       const summary = JSON.parse(result.stdout || "{}");
       log(`SessionEnd ingest session=${sessionId} runs=${summary.ingested ?? 0} provider=${summary.provider}`);
+      const evaluated = spawnSync(process.execPath, [
+        path.join(import.meta.dirname, "evaluate-claude-sessions.mjs"),
+        "--session-id", sessionId
+      ], { env: { ...process.env, ROLEBENCH_ROOT: root }, encoding: "utf8", timeout: 30_000 });
+      log(`SessionEnd evaluate session=${sessionId} status=${evaluated.status} evaluated=${evaluated.status === 0 ? JSON.parse(evaluated.stdout || "{}").evaluated ?? 0 : "-"}`);
     } else {
       log(`SessionEnd ingest failed session=${sessionId} status=${result.status} ${String(result.stderr || result.error || "").trim()}`);
     }

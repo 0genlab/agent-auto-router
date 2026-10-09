@@ -14,6 +14,8 @@ import {
 } from "../adapters/claude/session-ingest.mjs";
 import { createClaudeHostAdapter } from "../adapters/claude/host.mjs";
 import { readClaudeSessionRoute, recordClaudeSessionRoute } from "../adapters/claude/session-routes.mjs";
+import { classifyCommand, exitCodeOf } from "../adapters/claude/session-signals.mjs";
+import { acceptanceFor, evaluateClaudeRuns } from "../adapters/claude/session-evaluation.mjs";
 import {
   exportHermesRows,
   ingestHermesSessions,
@@ -1979,4 +1981,64 @@ test("Claude subagent transcripts become separate runs with a mapped role", () =
   assert.equal(event.task_id, "session-1");
 
   assert.equal(ingestClaudeSessionFiles({ files: [file, explore, general], store }).length, 0);
+});
+
+test("Claude signal classification only trusts unambiguous check commands", () => {
+  assert.equal(classifyCommand("npm test"), "check");
+  assert.equal(classifyCommand("cd app && go test ./..."), "check");
+  assert.equal(classifyCommand("node --test tests/*.test.mjs"), "check");
+  assert.equal(classifyCommand("node --test tests/ | tail -5"), null);
+  assert.equal(classifyCommand("npm test; echo done"), null);
+  assert.equal(classifyCommand("npm test || true"), null);
+  assert.equal(classifyCommand("ls -la"), null);
+  assert.equal(classifyCommand("gh pr create --base test --body-file x | cat"), "pr_create");
+  assert.equal(exitCodeOf({ is_error: false, content: "ok" }), 0);
+  assert.equal(exitCodeOf({ is_error: true, content: "Exit code 2\nboom" }), 2);
+  assert.equal(exitCodeOf({ is_error: true, content: [{ type: "text", text: "Exit code 1" }] }), 1);
+  assert.equal(exitCodeOf({ is_error: true, content: "Permission for this action was denied" }), null);
+  assert.equal(acceptanceFor(["OPEN", "MERGED"]), "accepted");
+  assert.equal(acceptanceFor(["CLOSED"]), "rejected");
+  assert.equal(acceptanceFor(["CLOSED", null]), null);
+  assert.equal(acceptanceFor([]), null);
+});
+
+test("Claude session signals flow into evaluation events without persisting commands", () => {
+  const root = tempRoot("0genlab-claude-signals-");
+  const { file } = writeClaudeFixture(root);
+  const tool = (id, command, model = "claude-opus-5") => ({
+    type: "assistant", sessionId: "session-1", timestamp: "2026-09-23T01:00:05.000Z",
+    message: { id: `use-${id}`, model, content: [{ type: "tool_use", id, name: "Bash", input: { command } }] }
+  });
+  const result = (id, isError, content) => ({
+    type: "user", sessionId: "session-1", timestamp: "2026-09-23T01:00:06.000Z",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: isError, content }] }
+  });
+  const extra = [
+    tool("t1", "npm test SECRET_COMMAND_SENTINEL"), result("t1", true, "Exit code 1\nSECRET_OUTPUT_SENTINEL"),
+    tool("t2", "npm test"), result("t2", false, "all good"),
+    tool("t3", "npm test | tail"), result("t3", true, "Exit code 1"),
+    tool("p1", "gh pr create --base test"), result("p1", false, "https://github.com/o/r/pull/7\n")
+  ];
+  fs.appendFileSync(file, `${extra.map((record) => JSON.stringify(record)).join("\n")}\n`);
+
+  const store = createRoleRunStore(path.join(root, "data", "role-runs"));
+  const [ingested] = ingestClaudeSessionFiles({ files: [file], store });
+  assert.deepEqual(ingested.model_group.signals, {
+    check_commands: 2, check_failures: 1, last_check_exit_code: 0, pull_requests: ["https://github.com/o/r/pull/7"]
+  });
+
+  let state = "OPEN";
+  const first = evaluateClaudeRuns({ store, prState: () => state });
+  assert.equal(first.length, 1);
+  assert.equal(first[0].acceptance_status, null);
+  assert.equal(first[0].quality_components.tests, 1);
+  assert.equal(evaluateClaudeRuns({ store, prState: () => state }).length, 0);
+
+  state = "MERGED";
+  const second = evaluateClaudeRuns({ store, prState: () => state });
+  assert.equal(second[0].acceptance_status, "accepted");
+  assert.equal(second[0].quality_score, 5);
+
+  const raw = fs.readFileSync(path.join(store.runsRoot, ingested.run_id, "events.jsonl"), "utf8");
+  assert.equal(raw.includes("SECRET_"), false);
 });

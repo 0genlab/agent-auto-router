@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { StringDecoder } from "node:string_decoder";
 import { calculateCostUsd, normalizeUsage } from "../../src/core/usage-cost.mjs";
 import { findModelPrice } from "../../src/core/model-pricing.mjs";
+import { createClaudeSignalCollector } from "./session-signals.mjs";
 
 const providerByHostname = [
   { hostname: "api.anthropic.com", provider: "anthropic" },
@@ -145,7 +146,8 @@ function claudeRunNeedsRefresh(runDir, { runId, session, group }) {
     || (finished.cache_read_tokens !== undefined
       && finished.cache_read_tokens !== group.usage.cache_read_tokens)
     || (finished.cache_write_tokens !== undefined
-      && finished.cache_write_tokens !== group.usage.cache_write_tokens);
+      && finished.cache_write_tokens !== group.usage.cache_write_tokens)
+    || JSON.stringify(finished.session_signals ?? null) !== JSON.stringify(group.signals ?? null);
 }
 
 function rewriteRunId(runDir, fromRunId, toRunId) {
@@ -347,8 +349,10 @@ export function parseClaudeSessionFile(file, {
   let timestampCount = 0;
   let sessionProviderEvidence = null;
   let agentId = null;
+  const signals = createClaudeSignalCollector();
 
   const malformedLineCount = consumeClaudeLines(file, (record) => {
+    signals.consume(record);
     eventTypes.add(record.type || "unknown");
     const timestamp = timestampOf(record);
     if (timestamp !== null) {
@@ -405,6 +409,7 @@ export function parseClaudeSessionFile(file, {
     }
     return {
       model: group.model,
+      signals: signals.forModel(group.model),
       usage: aggregateUsage(group.entries.map((entry) => entry.usage)),
       started_at: groupStartedAt === null ? null : new Date(groupStartedAt).toISOString(),
       ended_at: groupEndedAt === null ? null : new Date(groupEndedAt).toISOString(),
@@ -570,6 +575,7 @@ export function ingestClaudeSessionFiles({
         total_tokens: group.usage.total_tokens,
         cost_usd: cost,
         regression: null,
+        session_signals: group.signals || null,
         failure_mode: session.status === "failed" ? "session_error" : null,
         evidence: [`claude-session:${session.session_id}${session.agent_id ? `:agent-${session.agent_id}` : ""}${multipleModels ? `:${group.model || "unknown"}` : ""}`],
         note: "passive ingestion from Claude Code session JSONL; metadata only"
