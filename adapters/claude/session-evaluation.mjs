@@ -5,9 +5,11 @@ import { calculateQualityScore } from "../../src/core/quality-score.mjs";
 // - tests: the exit code of the last unambiguous test/build command
 // - acceptance: merged => accepted, all closed unmerged => rejected, otherwise pending
 // - rework: failed check commands plus the average number of non-merge commits
-//   pushed to the session's pull requests after they were opened
+//   pushed to the session's pull requests after they were opened, each PR
+//   capped so long-lived feature or batch PRs do not dominate the average
 
 const terminalStates = new Set(["MERGED", "CLOSED"]);
+const maxFollowUpCommitsPerPr = 10;
 
 export function followUpCommits(createdAt, commits = []) {
   const opened = Date.parse(createdAt || "");
@@ -31,7 +33,10 @@ export function githubPullRequestInfo(url) {
 }
 
 function reworkCount(signals, pullRequests) {
-  const followUps = pullRequests.map((pr) => pr.follow_up_commits).filter(Number.isFinite);
+  const followUps = pullRequests
+    .map((pr) => pr.follow_up_commits)
+    .filter(Number.isFinite)
+    .map((value) => Math.min(value, maxFollowUpCommitsPerPr));
   const prRework = followUps.length ? followUps.reduce((sum, value) => sum + value, 0) / followUps.length : null;
   const checkRework = signals.check_commands ? signals.check_failures : null;
   if (prRework === null && checkRework === null) return null;
@@ -115,8 +120,8 @@ export function evaluateClaudeRuns({ store, runIds = null, sessionId = null, prI
     };
 
     const unchanged = previous?.evaluator === evaluation.evaluator
-      && JSON.stringify([previous.test, previous.pull_requests, previous.quality_score])
-        === JSON.stringify([evaluation.test, evaluation.pull_requests, evaluation.quality_score]);
+      && JSON.stringify([previous.test, previous.pull_requests, previous.rework_count, previous.quality_score])
+        === JSON.stringify([evaluation.test, evaluation.pull_requests, evaluation.rework_count, evaluation.quality_score]);
     if (unchanged) continue;
     store.appendEvent(runId, evaluation);
     written.push(evaluation);

@@ -2048,6 +2048,15 @@ test("Claude session signals flow into evaluation events without persisting comm
   assert.equal(evaluateClaudeRuns({ store, prInfo }).length, 0);
   assert.equal(calls, before, "merged pull requests are not re-queried");
 
+  const root2 = tempRoot("0genlab-claude-signals-cap-");
+  const { file: file2 } = writeClaudeFixture(root2);
+  fs.appendFileSync(file2, `${[tool("p2", "gh pr create"), result("p2", false, "https://github.com/o/r/pull/8")].map((record) => JSON.stringify(record)).join("\n")}\n`);
+  const store2 = createRoleRunStore(path.join(root2, "data", "role-runs"));
+  ingestClaudeSessionFiles({ files: [file2], store: store2 });
+  const [capped] = evaluateClaudeRuns({ store: store2, prInfo: () => ({ state: "MERGED", follow_up_commits: 50 }) });
+  assert.equal(capped.pull_requests[0].follow_up_commits, 50);
+  assert.equal(capped.rework_count, 10);
+
   const raw = fs.readFileSync(path.join(store.runsRoot, ingested.run_id, "events.jsonl"), "utf8");
   assert.equal(raw.includes("SECRET_"), false);
 });
