@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { recommendRoles } from "../src/core/role-policy.mjs";
+import { joinEvaluations, recommendRoles } from "../src/core/role-policy.mjs";
 import { assertAdapter, createTaskProfile } from "../src/core/contracts.mjs";
 import { createAihubmixModelCatalog } from "../adapters/aihubmix/model-catalog.mjs";
 import { createSub2apiModelCatalog } from "../adapters/sub2api/model-catalog.mjs";
@@ -662,4 +662,16 @@ test("ignores an unsafe parent session ID when migrating aliases", () => {
   assert.equal(parseSessionFile(file).parent_session_id, null);
   const store = createRoleRunStore(path.join(root, "runs"));
   assert.equal(ingestSessionFiles({ files: [file], store }).length, 1);
+});
+
+test("joinEvaluations fills rework_count from the evaluation only when the run lacks one", () => {
+  const finished = (runId, extra = {}) => ({ event: "agent_finished", run_id: runId, provider: "p", role: "main", model: "m", ...extra });
+  const evaluation = (runId) => ({ event: "evaluation_finished", run_id: runId, provider: "p", role: "main", model: "m", quality_score: 4, rework_count: 2 });
+  const [filled, kept] = joinEvaluations([
+    finished("r1"), evaluation("r1"),
+    finished("r2", { rework_count: 0 }), evaluation("r2")
+  ]);
+  assert.equal(filled.rework_count, 2);
+  assert.equal(filled.quality_score, 4);
+  assert.equal(kept.rework_count, 0);
 });

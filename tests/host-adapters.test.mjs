@@ -15,7 +15,7 @@ import {
 import { createClaudeHostAdapter } from "../adapters/claude/host.mjs";
 import { readClaudeSessionRoute, recordClaudeSessionRoute } from "../adapters/claude/session-routes.mjs";
 import { classifyCommand, exitCodeOf } from "../adapters/claude/session-signals.mjs";
-import { acceptanceFor, evaluateClaudeRuns } from "../adapters/claude/session-evaluation.mjs";
+import { acceptanceFor, evaluateClaudeRuns, followUpCommits } from "../adapters/claude/session-evaluation.mjs";
 import {
   exportHermesRows,
   ingestHermesSessions,
@@ -2027,18 +2027,36 @@ test("Claude session signals flow into evaluation events without persisting comm
     check_commands: 2, check_failures: 1, last_check_exit_code: 0, pull_requests: ["https://github.com/o/r/pull/7"]
   });
 
-  let state = "OPEN";
-  const first = evaluateClaudeRuns({ store, prState: () => state });
+  let info = { state: "OPEN", follow_up_commits: 0 };
+  let calls = 0;
+  const prInfo = () => { calls += 1; return info; };
+  const first = evaluateClaudeRuns({ store, prInfo });
   assert.equal(first.length, 1);
   assert.equal(first[0].acceptance_status, null);
   assert.equal(first[0].quality_components.tests, 1);
-  assert.equal(evaluateClaudeRuns({ store, prState: () => state }).length, 0);
+  assert.equal(first[0].rework_count, 1);
+  assert.equal(evaluateClaudeRuns({ store, prInfo }).length, 0);
 
-  state = "MERGED";
-  const second = evaluateClaudeRuns({ store, prState: () => state });
+  info = { state: "MERGED", follow_up_commits: 2 };
+  const second = evaluateClaudeRuns({ store, prInfo });
   assert.equal(second[0].acceptance_status, "accepted");
-  assert.equal(second[0].quality_score, 5);
+  assert.equal(second[0].rework_count, 3);
+  assert.equal(second[0].quality_components.rework, 0);
+  assert.ok(second[0].quality_score < 5);
+
+  const before = calls;
+  assert.equal(evaluateClaudeRuns({ store, prInfo }).length, 0);
+  assert.equal(calls, before, "merged pull requests are not re-queried");
 
   const raw = fs.readFileSync(path.join(store.runsRoot, ingested.run_id, "events.jsonl"), "utf8");
   assert.equal(raw.includes("SECRET_"), false);
+});
+
+test("Claude follow-up commits exclude merges and commits before the PR opened", () => {
+  assert.equal(followUpCommits("2026-10-01T00:00:00Z", [
+    { committedDate: "2026-09-30T00:00:00Z", messageHeadline: "feat: initial" },
+    { committedDate: "2026-10-02T00:00:00Z", messageHeadline: "fix: review feedback" },
+    { committedDate: "2026-10-03T00:00:00Z", messageHeadline: "Merge remote-tracking branch 'origin/main'" }
+  ]), 1);
+  assert.equal(followUpCommits(null, []), null);
 });

@@ -23,7 +23,7 @@ try {
     store,
     runIds: runIds.length ? runIds : null,
     sessionId: option(args, "--session-id", null),
-    ...(args.includes("--skip-github") ? { prState: () => null } : {})
+    ...(args.includes("--skip-github") ? { prInfo: () => null } : {})
   });
   console.log(JSON.stringify({
     evaluated: written.length,
@@ -33,6 +33,7 @@ try {
       role: event.role,
       quality_score: event.quality_score,
       acceptance_status: event.acceptance_status,
+      rework_count: event.rework_count,
       last_check_exit_code: event.test?.exit_code ?? null
     }))
   }, null, 2));

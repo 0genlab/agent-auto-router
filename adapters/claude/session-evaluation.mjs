@@ -4,13 +4,38 @@ import { calculateQualityScore } from "../../src/core/quality-score.mjs";
 // Turns session-derived signals into evaluation_finished events:
 // - tests: the exit code of the last unambiguous test/build command
 // - acceptance: merged => accepted, all closed unmerged => rejected, otherwise pending
+// - rework: failed check commands plus the average number of non-merge commits
+//   pushed to the session's pull requests after they were opened
 
-export function githubPullRequestState(url) {
-  const result = spawnSync("gh", ["pr", "view", url, "--json", "state", "--jq", ".state"], {
+const terminalStates = new Set(["MERGED", "CLOSED"]);
+
+export function followUpCommits(createdAt, commits = []) {
+  const opened = Date.parse(createdAt || "");
+  if (!Number.isFinite(opened)) return null;
+  return commits.filter((commit) => Date.parse(commit?.committedDate || "") > opened
+    && !/^Merge\b/.test(String(commit?.messageHeadline || ""))).length;
+}
+
+export function githubPullRequestInfo(url) {
+  const result = spawnSync("gh", ["pr", "view", url, "--json", "state,createdAt,commits"], {
     encoding: "utf8",
     timeout: 15_000
   });
-  return result.status === 0 ? String(result.stdout || "").trim() || null : null;
+  if (result.status !== 0) return null;
+  try {
+    const pr = JSON.parse(result.stdout);
+    return { state: pr.state || null, follow_up_commits: followUpCommits(pr.createdAt, pr.commits) };
+  } catch {
+    return null;
+  }
+}
+
+function reworkCount(signals, pullRequests) {
+  const followUps = pullRequests.map((pr) => pr.follow_up_commits).filter(Number.isFinite);
+  const prRework = followUps.length ? followUps.reduce((sum, value) => sum + value, 0) / followUps.length : null;
+  const checkRework = signals.check_commands ? signals.check_failures : null;
+  if (prRework === null && checkRework === null) return null;
+  return Math.round(((checkRework || 0) + (prRework || 0)) * 10) / 10;
 }
 
 export function acceptanceFor(states) {
@@ -24,7 +49,7 @@ function latestBy(events, name) {
   return events.filter((event) => event.event === name).at(-1) || null;
 }
 
-export function evaluateClaudeRuns({ store, runIds = null, sessionId = null, prState = githubPullRequestState, now = new Date() } = {}) {
+export function evaluateClaudeRuns({ store, runIds = null, sessionId = null, prInfo = githubPullRequestInfo, now = new Date() } = {}) {
   const byRun = new Map();
   for (const event of store.readEvents()) {
     if (!String(event.run_id || "").startsWith("claude-")) continue;
@@ -33,10 +58,12 @@ export function evaluateClaudeRuns({ store, runIds = null, sessionId = null, prS
     byRun.get(event.run_id).push(event);
   }
 
-  const stateCache = new Map();
-  const cachedState = (url) => {
-    if (!stateCache.has(url)) stateCache.set(url, prState(url));
-    return stateCache.get(url);
+  const infoCache = new Map();
+  const cachedInfo = (url, previous) => {
+    // Merged or closed pull requests no longer change; reuse what was recorded.
+    if (terminalStates.has(previous?.state) && Number.isFinite(previous?.follow_up_commits)) return previous;
+    if (!infoCache.has(url)) infoCache.set(url, prInfo(url));
+    return infoCache.get(url);
   };
 
   const written = [];
@@ -48,10 +75,19 @@ export function evaluateClaudeRuns({ store, runIds = null, sessionId = null, prS
     const pullRequests = signals.pull_requests || [];
     if (signals.last_check_exit_code === null && !pullRequests.length) continue;
 
-    const states = pullRequests.map(cachedState);
-    const acceptance = acceptanceFor(states);
+    const previous = latestBy(events, "evaluation_finished");
+    const previousPrs = new Map((previous?.pull_requests || []).map((pr) => [pr.url, pr]));
+    const prs = pullRequests.map((url) => {
+      const info = cachedInfo(url, previousPrs.get(url));
+      return { url, state: info?.state || null, follow_up_commits: info?.follow_up_commits ?? null };
+    });
+    const acceptance = acceptanceFor(prs.map((pr) => pr.state));
+    const rework = reworkCount(signals, prs);
     const test = signals.last_check_exit_code === null ? null : { exit_code: signals.last_check_exit_code };
-    const quality = calculateQualityScore({ evaluation: { test }, run: { acceptance_status: acceptance } });
+    const quality = calculateQualityScore({
+      evaluation: { test },
+      run: { acceptance_status: acceptance, rework_count: rework }
+    });
     const evaluation = {
       schema_version: 1,
       run_id: runId,
@@ -65,18 +101,19 @@ export function evaluateClaudeRuns({ store, runIds = null, sessionId = null, prS
       test,
       check_commands: signals.check_commands,
       check_failures: signals.check_failures,
-      pull_requests: pullRequests.map((url, index) => ({ url, state: states[index] })),
+      pull_requests: prs,
       acceptance_status: acceptance,
+      rework_count: rework,
       quality_score: quality.quality_score,
       quality_confidence: quality.quality_confidence,
       quality_components: quality.quality_components,
       evidence: [
         test ? "claude-session:check-exit-code" : null,
-        pullRequests.length ? "github:pull-request-state" : null
+        pullRequests.length ? "github:pull-request-state" : null,
+        rework === null ? null : "claude-session:rework"
       ].filter(Boolean)
     };
 
-    const previous = latestBy(events, "evaluation_finished");
     const unchanged = previous?.evaluator === evaluation.evaluator
       && JSON.stringify([previous.test, previous.pull_requests, previous.quality_score])
         === JSON.stringify([evaluation.test, evaluation.pull_requests, evaluation.quality_score]);
