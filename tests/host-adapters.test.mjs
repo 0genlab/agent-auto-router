@@ -13,6 +13,9 @@ import {
   parseClaudeSessionFile
 } from "../adapters/claude/session-ingest.mjs";
 import { createClaudeHostAdapter } from "../adapters/claude/host.mjs";
+import { readClaudeSessionRoute, recordClaudeSessionRoute } from "../adapters/claude/session-routes.mjs";
+import { classifyCommand, exitCodeOf } from "../adapters/claude/session-signals.mjs";
+import { acceptanceFor, evaluateClaudeRuns, followUpCommits } from "../adapters/claude/session-evaluation.mjs";
 import {
   exportHermesRows,
   ingestHermesSessions,
@@ -1872,4 +1875,197 @@ test("host stage removes a prepared temporary usage file after reading it", asyn
   });
   assert.equal(result.status, "success");
   assert.equal(fs.existsSync(usageFile), false);
+});
+
+test("Claude session route hook evidence verifies the provider and refreshes an unknown run", () => {
+  const root = tempRoot("0genlab-claude-route-");
+  const { file } = writeClaudeFixture(root);
+  const routesDir = path.join(root, "data", "claude-session-routes");
+  const store = createRoleRunStore(path.join(root, "data", "role-runs"));
+  const routeEvidence = (sessionId) => readClaudeSessionRoute(routesDir, sessionId);
+
+  const before = ingestClaudeSessionFiles({ files: [file], store, routeEvidence });
+  assert.equal(before[0].session.provider, "unknown");
+
+  const recorded = recordClaudeSessionRoute({
+    routesDir,
+    sessionId: "session-1",
+    env: { ANTHROPIC_BASE_URL: "https://ccsub.inferera.com/v1?token=SECRET_ROUTE_SENTINEL" }
+  });
+  assert.equal(recorded.created, true);
+  assert.equal(recorded.route.provider, "sub2api");
+  assert.equal(recorded.route.base_url_origin, "https://ccsub.inferera.com");
+  assert.equal(fs.readFileSync(recorded.file, "utf8").includes("SECRET_ROUTE_SENTINEL"), false);
+  assert.equal(recordClaudeSessionRoute({ routesDir, sessionId: "session-1", env: {} }).created, false);
+
+  const after = ingestClaudeSessionFiles({ files: [file], store, routeEvidence });
+  assert.equal(after.length, 1);
+  assert.equal(after[0].session.provider, "sub2api");
+  assert.equal(after[0].session.provider_verified, true);
+  assert.equal(after[0].session.provider_evidence, "session-route-hook");
+});
+
+test("Claude session route ignores unsafe ids and unmapped routes", () => {
+  const routesDir = path.join(tempRoot("0genlab-claude-route-unsafe-"), "routes");
+  assert.throws(() => recordClaudeSessionRoute({ routesDir, sessionId: "../escape", env: {} }));
+  recordClaudeSessionRoute({ routesDir, sessionId: "s2", env: { ANTHROPIC_BASE_URL: "http://ccsub.inferera.com" } });
+  assert.equal(readClaudeSessionRoute(routesDir, "s2"), null);
+  assert.equal(readClaudeSessionRoute(routesDir, "missing"), null);
+});
+
+test("Claude session hook records the route at start and ingests the transcript at end", () => {
+  const root = tempRoot("0genlab-claude-hook-");
+  const { file } = writeClaudeFixture(root);
+  const env = {
+    ...process.env,
+    ROLEBENCH_ROOT: root,
+    CLAUDE_CONFIG_DIR: path.join(root, ".claude"),
+    ANTHROPIC_BASE_URL: "https://ccsub.inferera.com"
+  };
+  const run = (payload) => spawnSync(process.execPath, [path.join(repoRoot, "scripts", "claude-session-hook.mjs")], {
+    input: JSON.stringify(payload), env, encoding: "utf8"
+  });
+
+  writeClaudeSubagentFixture(file, { agentId: "a1", agentType: "Plan" });
+  assert.equal(run({ hook_event_name: "SessionStart", session_id: "session-1" }).status, 0);
+  assert.equal(fs.existsSync(path.join(root, "data", "claude-session-routes", "session-1.json")), true);
+
+  assert.equal(run({ hook_event_name: "SessionEnd", session_id: "session-1", transcript_path: file }).status, 0);
+  const runs = fs.readdirSync(path.join(root, "data", "role-runs")).filter((name) => name.startsWith("claude-"));
+  assert.equal(runs.length, 2);
+  const events = runs.map((name) => JSON.parse(fs.readFileSync(path.join(root, "data", "role-runs", name, "events.jsonl"), "utf8").trim().split("\n").at(-1)));
+  assert.deepEqual(events.map((event) => event.role).sort(), ["main", "planner"]);
+  for (const event of events) {
+    assert.equal(event.provider, "sub2api");
+    assert.equal(event.provider_verified, true);
+  }
+
+  assert.equal(run({ hook_event_name: "SessionEnd", session_id: "session-1", transcript_path: "/nonexistent.jsonl" }).status, 0);
+  assert.equal(spawnSync(process.execPath, [path.join(repoRoot, "scripts", "claude-session-hook.mjs")], { input: "not json", env }).status, 0);
+});
+
+function writeClaudeSubagentFixture(sessionFile, { agentId, agentType, model = "claude-fable-5" }) {
+  const dir = path.join(sessionFile.replace(/\.jsonl$/, ""), "subagents");
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `agent-${agentId}.jsonl`);
+  const records = [
+    { type: "user", isSidechain: true, agentId, sessionId: "session-1", timestamp: "2026-09-23T01:00:02.000Z", message: { role: "user", content: "SECRET_PROMPT_SENTINEL" } },
+    { type: "assistant", isSidechain: true, agentId, sessionId: "session-1", timestamp: "2026-09-23T01:00:04.000Z", message: { id: `msg-${agentId}`, model, usage: { input_tokens: 10, output_tokens: 20 } } }
+  ];
+  fs.writeFileSync(file, `${records.map((record) => JSON.stringify(record)).join("\n")}\n`);
+  fs.writeFileSync(path.join(dir, `agent-${agentId}.meta.json`), JSON.stringify({ agentType, description: "SECRET_DESCRIPTION_SENTINEL" }));
+  return file;
+}
+
+test("Claude subagent transcripts become separate runs with a mapped role", () => {
+  const root = tempRoot("0genlab-claude-subagent-");
+  const { file } = writeClaudeFixture(root);
+  const explore = writeClaudeSubagentFixture(file, { agentId: "a1", agentType: "Explore" });
+  const general = writeClaudeSubagentFixture(file, { agentId: "a2", agentType: "general-purpose" });
+  const store = createRoleRunStore(path.join(root, "data", "role-runs"));
+
+  const ingested = ingestClaudeSessionFiles({ files: [file, explore, general], store });
+  assert.equal(ingested.length, 3);
+  assert.equal(new Set(ingested.map((item) => item.run_id)).size, 3);
+  const byAgent = Object.fromEntries(ingested.map((item) => [item.session.agent_id || "main", item]));
+  assert.equal(byAgent.main.session.role, "main");
+  assert.equal(byAgent.a1.session.role, "explorer");
+  assert.equal(byAgent.a2.session.role, "main");
+  assert.equal(byAgent.a1.model_group.usage.output_tokens, 20);
+
+  const manifest = JSON.parse(fs.readFileSync(path.join(store.runsRoot, byAgent.a1.run_id, "manifest.json"), "utf8"));
+  assert.equal(manifest.agent_type, "Explore");
+  assert.equal(JSON.stringify(manifest).includes("SECRET_"), false);
+  const event = JSON.parse(fs.readFileSync(path.join(store.runsRoot, byAgent.a1.run_id, "events.jsonl"), "utf8").trim().split("\n").at(-1));
+  assert.equal(event.role, "explorer");
+  assert.equal(event.task_id, "session-1");
+
+  assert.equal(ingestClaudeSessionFiles({ files: [file, explore, general], store }).length, 0);
+});
+
+test("Claude signal classification only trusts unambiguous check commands", () => {
+  assert.equal(classifyCommand("npm test"), "check");
+  assert.equal(classifyCommand("cd app && go test ./..."), "check");
+  assert.equal(classifyCommand("node --test tests/*.test.mjs"), "check");
+  assert.equal(classifyCommand("node --test tests/ | tail -5"), null);
+  assert.equal(classifyCommand("npm test; echo done"), null);
+  assert.equal(classifyCommand("npm test || true"), null);
+  assert.equal(classifyCommand("ls -la"), null);
+  assert.equal(classifyCommand("gh pr create --base test --body-file x | cat"), "pr_create");
+  assert.equal(exitCodeOf({ is_error: false, content: "ok" }), 0);
+  assert.equal(exitCodeOf({ is_error: true, content: "Exit code 2\nboom" }), 2);
+  assert.equal(exitCodeOf({ is_error: true, content: [{ type: "text", text: "Exit code 1" }] }), 1);
+  assert.equal(exitCodeOf({ is_error: true, content: "Permission for this action was denied" }), null);
+  assert.equal(acceptanceFor(["OPEN", "MERGED"]), "accepted");
+  assert.equal(acceptanceFor(["CLOSED"]), "rejected");
+  assert.equal(acceptanceFor(["CLOSED", null]), null);
+  assert.equal(acceptanceFor([]), null);
+});
+
+test("Claude session signals flow into evaluation events without persisting commands", () => {
+  const root = tempRoot("0genlab-claude-signals-");
+  const { file } = writeClaudeFixture(root);
+  const tool = (id, command, model = "claude-opus-5") => ({
+    type: "assistant", sessionId: "session-1", timestamp: "2026-09-23T01:00:05.000Z",
+    message: { id: `use-${id}`, model, content: [{ type: "tool_use", id, name: "Bash", input: { command } }] }
+  });
+  const result = (id, isError, content) => ({
+    type: "user", sessionId: "session-1", timestamp: "2026-09-23T01:00:06.000Z",
+    message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, is_error: isError, content }] }
+  });
+  const extra = [
+    tool("t1", "npm test SECRET_COMMAND_SENTINEL"), result("t1", true, "Exit code 1\nSECRET_OUTPUT_SENTINEL"),
+    tool("t2", "npm test"), result("t2", false, "all good"),
+    tool("t3", "npm test | tail"), result("t3", true, "Exit code 1"),
+    tool("p1", "gh pr create --base test"), result("p1", false, "https://github.com/o/r/pull/7\n")
+  ];
+  fs.appendFileSync(file, `${extra.map((record) => JSON.stringify(record)).join("\n")}\n`);
+
+  const store = createRoleRunStore(path.join(root, "data", "role-runs"));
+  const [ingested] = ingestClaudeSessionFiles({ files: [file], store });
+  assert.deepEqual(ingested.model_group.signals, {
+    check_commands: 2, check_failures: 1, last_check_exit_code: 0, pull_requests: ["https://github.com/o/r/pull/7"]
+  });
+
+  let info = { state: "OPEN", follow_up_commits: 0 };
+  let calls = 0;
+  const prInfo = () => { calls += 1; return info; };
+  const first = evaluateClaudeRuns({ store, prInfo });
+  assert.equal(first.length, 1);
+  assert.equal(first[0].acceptance_status, null);
+  assert.equal(first[0].quality_components.tests, 1);
+  assert.equal(first[0].rework_count, 1);
+  assert.equal(evaluateClaudeRuns({ store, prInfo }).length, 0);
+
+  info = { state: "MERGED", follow_up_commits: 2 };
+  const second = evaluateClaudeRuns({ store, prInfo });
+  assert.equal(second[0].acceptance_status, "accepted");
+  assert.equal(second[0].rework_count, 3);
+  assert.equal(second[0].quality_components.rework, 0);
+  assert.ok(second[0].quality_score < 5);
+
+  const before = calls;
+  assert.equal(evaluateClaudeRuns({ store, prInfo }).length, 0);
+  assert.equal(calls, before, "merged pull requests are not re-queried");
+
+  const root2 = tempRoot("0genlab-claude-signals-cap-");
+  const { file: file2 } = writeClaudeFixture(root2);
+  fs.appendFileSync(file2, `${[tool("p2", "gh pr create"), result("p2", false, "https://github.com/o/r/pull/8")].map((record) => JSON.stringify(record)).join("\n")}\n`);
+  const store2 = createRoleRunStore(path.join(root2, "data", "role-runs"));
+  ingestClaudeSessionFiles({ files: [file2], store: store2 });
+  const [capped] = evaluateClaudeRuns({ store: store2, prInfo: () => ({ state: "MERGED", follow_up_commits: 50 }) });
+  assert.equal(capped.pull_requests[0].follow_up_commits, 50);
+  assert.equal(capped.rework_count, 10);
+
+  const raw = fs.readFileSync(path.join(store.runsRoot, ingested.run_id, "events.jsonl"), "utf8");
+  assert.equal(raw.includes("SECRET_"), false);
+});
+
+test("Claude follow-up commits exclude merges and commits before the PR opened", () => {
+  assert.equal(followUpCommits("2026-10-01T00:00:00Z", [
+    { committedDate: "2026-09-30T00:00:00Z", messageHeadline: "feat: initial" },
+    { committedDate: "2026-10-02T00:00:00Z", messageHeadline: "fix: review feedback" },
+    { committedDate: "2026-10-03T00:00:00Z", messageHeadline: "Merge remote-tracking branch 'origin/main'" }
+  ]), 1);
+  assert.equal(followUpCommits(null, []), null);
 });

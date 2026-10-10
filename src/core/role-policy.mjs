@@ -45,7 +45,14 @@ export function joinEvaluations(events) {
     .filter((event) => event.event === "agent_finished")
     .map((event) => {
       const evaluation = evaluations.get(`${event.run_id}:${event.provider || "unknown"}:${event.role}:${event.model}`);
-      return evaluation ? { ...event, quality_score: evaluation.quality_score } : event;
+      if (!evaluation) return event;
+      return {
+        ...event,
+        quality_score: evaluation.quality_score,
+        ...(Number.isFinite(event.rework_count) || !Number.isFinite(evaluation.rework_count)
+          ? {}
+          : { rework_count: evaluation.rework_count })
+      };
     });
 }
 
