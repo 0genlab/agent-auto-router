@@ -5,10 +5,15 @@ import path from "node:path";
 import process from "node:process";
 import { createRoleRunStore } from "../adapters/jsonl/role-run-store.mjs";
 import { ingestClaudeSessionFiles } from "../adapters/claude/session-ingest.mjs";
+import { readClaudeSessionRoute } from "../adapters/claude/session-routes.mjs";
 
 function option(args, name, fallback = null) {
   const index = args.indexOf(name);
   return index >= 0 ? args[index + 1] : fallback;
+}
+
+function options(args, name) {
+  return args.flatMap((arg, index) => (arg === name && args[index + 1] ? [args[index + 1]] : []));
 }
 
 function sessionFiles(directory) {
@@ -48,17 +53,20 @@ try {
   const sinceValue = option(args, "--since", null);
   const since = sinceValue ? Date.parse(sinceValue) : null;
   const auditedProvider = option(args, "--audited-provider", null);
+  const routesDir = option(args, "--routes-dir", path.join(root, "data", "claude-session-routes"));
+  const explicitFiles = options(args, "--file").map((file) => path.resolve(file));
   const prices = loadPriceSnapshots(snapshotsDir, snapshotPath);
   const store = createRoleRunStore(outputRoot);
   const ingested = ingestClaudeSessionFiles({
-    files: sessionFiles(sessionsDir),
+    files: explicitFiles.length ? explicitFiles.filter((file) => fs.existsSync(file)) : sessionFiles(sessionsDir),
     store,
     auditedProvider,
     auditedProviderVerified: Boolean(auditedProvider),
     priceSnapshot: prices.explicit,
     priceSnapshots: prices.snapshots,
     since: Number.isFinite(since) ? since : null,
-    refresh: args.includes("--refresh")
+    refresh: args.includes("--refresh"),
+    routeEvidence: (sessionId) => readClaudeSessionRoute(routesDir, sessionId)
   });
   const providers = [...new Set(ingested.map((item) => item.session.provider))];
   const provider = providers.length === 1 ? providers[0] : providers.length > 1 ? "mixed" : auditedProvider || "unknown";

@@ -199,6 +199,19 @@ Claude Code runs as `claude --print --output-format json --model <model>`. Use `
 
 For normal interactive Claude Code sessions, keep using `claude` and import the metadata afterward with `ingest-claude-sessions.mjs`.
 
+To record every interactive session automatically, register `scripts/claude-session-hook.mjs` for `SessionStart` and `SessionEnd` in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "SessionStart": [{ "hooks": [{ "type": "command", "command": "node /path/to/0genlab/scripts/claude-session-hook.mjs" }] }],
+    "SessionEnd": [{ "hooks": [{ "type": "command", "command": "node /path/to/0genlab/scripts/claude-session-hook.mjs" }] }]
+  }
+}
+```
+
+Claude Code does not write `ANTHROPIC_BASE_URL` into session JSONL, so historical sessions stay provider `unknown`. The hook runs inside the live session's environment and records the route origin under `data/claude-session-routes/<session_id>.json`; ingestion re-derives the provider from that origin and marks it `provider_verified` with evidence `session-route-hook`. On `SessionEnd` the hook imports that session with `ingest-claude-sessions.mjs --file <transcript>`. The hook always exits 0 and logs to `data/claude-session-hook.log`.
+
 ### Use with Hermes
 
 For Hermes, the provider and model must exist in the local supported catalog or current configuration:
